@@ -91,6 +91,11 @@ class D3DCommonTracer(DllTracer):
         dxgi.IDXGISurface,
         d3d10.ID3D10Resource,
     )
+
+    bufferInterfaceNames = (
+        'ID3D10Buffer',
+        'ID3D11Buffer'
+    )
     
     def enumWrapperInterfaceVariables(self, interface):
         variables = DllTracer.enumWrapperInterfaceVariables(self, interface)
@@ -104,6 +109,10 @@ class D3DCommonTracer(DllTracer):
             variables += [
                 ('std::map< std::pair<ID3D11Resource *, UINT>, _MAP_DESC >', 'm_MapDescs', None),
             ]
+            if interface.name in self.bufferInterfaceNames:
+                variables += [
+                    ('MemoryShadow', '_MapShadow', None),
+                ]
 
         return variables
 
@@ -118,7 +127,10 @@ class D3DCommonTracer(DllTracer):
 
         if method.name == 'Unmap':
             print '    if (_MapDesc.Size && _MapDesc.pData) {'
-            self.emit_memcpy('_MapDesc.pData', '_MapDesc.Size')
+            if interface.name in self.bufferInterfaceNames:
+                print '        _MapShadow.update(trace::fakeMemcpy);'
+            else:
+                self.emit_memcpy('_MapDesc.pData', '_MapDesc.Size')
             print '    }'
 
         DllTracer.implementWrapperInterfaceMethodBody(self, interface, base, method)
@@ -127,6 +139,8 @@ class D3DCommonTracer(DllTracer):
             # NOTE: recursive locks are explicitely forbidden
             print '    if (SUCCEEDED(_result)) {'
             print '        _getMapDesc(_this, %s, _MapDesc);' % ', '.join(method.argNames())
+            if interface.name in self.bufferInterfaceNames:
+                print '        _MapShadow.cover(_MapDesc.pData, _MapDesc.Size);'
             print '    } else {'
             print '        _MapDesc.pData = NULL;'
             print '        _MapDesc.Size = 0;'
@@ -146,6 +160,7 @@ if __name__ == '__main__':
     print r'#include "d3d11imports.hpp"'
     print r'#include "d3d11size.hpp"'
     print r'#include "d3d9imports.hpp" // D3DPERF_*'
+    print r'#include "shadow.hpp"'
     print
 
     api = API()
