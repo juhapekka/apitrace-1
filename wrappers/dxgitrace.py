@@ -92,11 +92,6 @@ class D3DCommonTracer(DllTracer):
         d3d10.ID3D10Resource,
     )
 
-    bufferInterfaceNames = (
-        'ID3D10Buffer',
-        'ID3D11Buffer'
-    )
-    
     def enumWrapperInterfaceVariables(self, interface):
         variables = DllTracer.enumWrapperInterfaceVariables(self, interface)
         
@@ -104,15 +99,12 @@ class D3DCommonTracer(DllTracer):
         if interface.hasBase(*self.mapInterfaces):
             variables += [
                 ('_MAP_DESC', 'm_MapDesc', None),
+                ('MemoryShadow', '_MapShadow', None),
             ]
         if interface.hasBase(d3d11.ID3D11DeviceContext):
             variables += [
                 ('std::map< std::pair<ID3D11Resource *, UINT>, _MAP_DESC >', 'm_MapDescs', None),
             ]
-            if interface.name in self.bufferInterfaceNames:
-                variables += [
-                    ('MemoryShadow', '_MapShadow', None),
-                ]
 
         return variables
 
@@ -127,10 +119,11 @@ class D3DCommonTracer(DllTracer):
 
         if method.name == 'Unmap':
             print '    if (_MapDesc.Size && _MapDesc.pData) {'
-            if interface.name in self.bufferInterfaceNames:
-                print '        _MapShadow.update(trace::fakeMemcpy);'
-            else:
-                self.emit_memcpy('_MapDesc.pData', '_MapDesc.Size')
+            print '        if (_shouldShadowMap(%s->m_pInstance)) {' % pResource
+            print '            %s->_MapShadow.update(trace::fakeMemcpy);' % pResource
+            print '        } else {'
+            self.emit_memcpy('_MapDesc.pData', '_MapDesc.Size')
+            print '        }'
             print '    }'
 
         DllTracer.implementWrapperInterfaceMethodBody(self, interface, base, method)
@@ -139,8 +132,9 @@ class D3DCommonTracer(DllTracer):
             # NOTE: recursive locks are explicitely forbidden
             print '    if (SUCCEEDED(_result)) {'
             print '        _getMapDesc(_this, %s, _MapDesc);' % ', '.join(method.argNames())
-            if interface.name in self.bufferInterfaceNames:
-                print '        _MapShadow.cover(_MapDesc.pData, _MapDesc.Size);'
+            print '        if (_shouldShadowMap(%s->m_pInstance)) {' % pResource
+            print '            %s->_MapShadow.cover(_MapDesc.pData, _MapDesc.Size);' %pResource
+            print '        }'
             print '    } else {'
             print '        _MapDesc.pData = NULL;'
             print '        _MapDesc.Size = 0;'
