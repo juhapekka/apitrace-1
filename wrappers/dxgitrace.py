@@ -142,6 +142,14 @@ class D3DCommonTracer(DllTracer):
             print '        _MapDesc.Size = 0;'
             print '    }'
 
+    def invokeMethod(self, interface, base, method):
+        DllTracer.invokeMethod(self, interface, base, method)
+
+        if method.name == 'CreateBuffer':
+            print r'    if (SUCCEEDED(_result) && !pInitialData) {'
+            print r'        _initializeBuffer(_this, pDesc, *ppBuffer);'
+            print r'    }'
+
 
 if __name__ == '__main__':
     print r'#define INITGUID'
@@ -149,14 +157,7 @@ if __name__ == '__main__':
     print r'#include "trace_writer_local.hpp"'
     print r'#include "os.hpp"'
     print
-    print r'#include "d3dcommonshader.hpp"'
-    print
-    print r'#include "d3d10imports.hpp"'
-    print r'#include "d3d10size.hpp"'
-    print r'#include "d3d11imports.hpp"'
-    print r'#include "d3d11size.hpp"'
-    print r'#include "d3d9imports.hpp" // D3DPERF_*'
-    print r'#include "shadow.hpp"'
+    print r'#include "dxgitrace.hpp"'
     print
 
     api = API()
