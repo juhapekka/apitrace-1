@@ -186,9 +186,24 @@ _glGetString_override(GLenum name)
 }
 
 
+/**
+ * TODO: To be thorough, we should override all glGet*v.
+ */
 void
 _glGetIntegerv_override(GLenum pname, GLint *params)
 {
+    switch (pname) {
+    case GL_NUM_PROGRAM_BINARY_FORMATS:
+        if (params) {
+            params[0] = 0;
+        }
+        return;
+    case GL_PROGRAM_BINARY_FORMATS:
+        // params might be NULL here, as we returned 0 for
+        // GL_NUM_PROGRAM_BINARY_FORMATS.
+        return;
+    }
+
     _glGetIntegerv(pname, params);
 
     if (params) {
@@ -208,8 +223,6 @@ _glGetIntegerv_override(GLenum pname, GLint *params)
             if (params[0] == 0) {
                 params[0] = 256;
             }
-            break;
-        default:
             break;
         }
     }
