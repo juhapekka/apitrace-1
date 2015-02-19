@@ -99,11 +99,12 @@ class D3DCommonTracer(DllTracer):
         if interface.hasBase(*self.mapInterfaces):
             variables += [
                 ('_MAP_DESC', 'm_MapDesc', None),
-                ('MemoryShadow', '_MapShadow', None),
+                ('MemoryShadow', 'm_MapShadow', None),
             ]
         if interface.hasBase(d3d11.ID3D11DeviceContext):
             variables += [
                 ('std::map< std::pair<ID3D11Resource *, UINT>, _MAP_DESC >', 'm_MapDescs', None),
+                ('std::map< std::pair<ID3D11Resource *, UINT>, MemoryShadow >', 'm_MapShadows', None),
             ]
 
         return variables
@@ -114,13 +115,17 @@ class D3DCommonTracer(DllTracer):
             resourceArg = method.getArgByName('pResource')
             if resourceArg is None:
                 print '    _MAP_DESC & _MapDesc = m_MapDesc;'
+                print '    MemoryShadow & _MapShadow = m_MapShadow;'
+                print '    %s *pResourceInstance = m_pInstance;' % interface.name
             else:
                 print '    _MAP_DESC & _MapDesc = m_MapDescs[std::pair<%s, UINT>(pResource, Subresource)];' % resourceArg.type
+                print '    MemoryShadow & _MapShadow = m_MapShadows[std::pair<%s, UINT>(pResource, Subresource)];' % resourceArg.type
+                print '    Wrap%spResourceInstance = static_cast<Wrap%s>(%s);' % (resourceArg.type, resourceArg.type, resourceArg.name)
 
         if method.name == 'Unmap':
             print '    if (_MapDesc.Size && _MapDesc.pData) {'
-            print '        if (_shouldShadowMap(%s->m_pInstance)) {' % pResource
-            print '            %s->_MapShadow.update(trace::fakeMemcpy);' % pResource
+            print '        if (_shouldShadowMap(pResourceInstance)) {'
+            print '            _MapShadow.update(trace::fakeMemcpy);'
             print '        } else {'
             self.emit_memcpy('_MapDesc.pData', '_MapDesc.Size')
             print '        }'
@@ -132,10 +137,12 @@ class D3DCommonTracer(DllTracer):
             # NOTE: recursive locks are explicitely forbidden
             print '    if (SUCCEEDED(_result)) {'
             print '        _getMapDesc(_this, %s, _MapDesc);' % ', '.join(method.argNames())
-            print '        if (_shouldShadowMap(%s->m_pInstance)) {' % pResource
-            if not interface.name.startswith('IDXGI'):
+            print '        if (_shouldShadowMap(pResourceInstance)) {'
+            if interface.name.startswith('IDXGI'):
+                print '            (void)_MapShadow;'
+            else:
                 print '            bool _discard = MapType == 4 /* D3D1[01]_MAP_WRITE_DISCARD */;'
-                print '            %s->_MapShadow.cover(_MapDesc.pData, _MapDesc.Size, _discard);' %pResource
+                print '            _MapShadow.cover(_MapDesc.pData, _MapDesc.Size, _discard);'
             print '        }'
             print '    } else {'
             print '        _MapDesc.pData = NULL;'
