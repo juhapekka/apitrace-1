@@ -42,6 +42,9 @@ namespace trace {
 Writer::Writer() :
     call_no(0)
 {
+    forceWriteFlag = false;
+    singleFrameCaptureMode = false;
+    framesRemainingToCapture = -1;
     m_file = File::createSnappy();
     close();
 }
@@ -80,7 +83,9 @@ Writer::open(const char *filename) {
 
 void inline
 Writer::_write(const void *sBuffer, size_t dwBytesToWrite) {
-    m_file->write(sBuffer, dwBytesToWrite);
+    if (WRITE_TRACE) {
+        m_file->write(sBuffer, dwBytesToWrite);
+    }
 }
 
 void inline
@@ -166,7 +171,8 @@ void Writer::writeStackFrame(const RawStackFrame *frame) {
             _writeUInt(frame->offset);
         }
         _writeByte(trace::BACKTRACE_END);
-        frames[frame->id] = true;
+        if (WRITE_TRACE)
+            frames[frame->id] = true;
     }
 }
 
@@ -180,10 +186,16 @@ unsigned Writer::beginEnter(const FunctionSig *sig, unsigned thread_id) {
         for (unsigned i = 0; i < sig->num_args; ++i) {
             _writeString(sig->arg_names[i]);
         }
-        functions[sig->id] = true;
+        if (WRITE_TRACE)
+            functions[sig->id] = true;
     }
 
-    return call_no++;
+    if (WRITE_TRACE) {
+        return call_no++;
+    }
+    else {
+        return call_no;
+    }
 }
 
 void Writer::endEnter(void) {
@@ -222,7 +234,8 @@ void Writer::beginStruct(const StructSig *sig) {
         for (unsigned i = 0; i < sig->num_members; ++i) {
             _writeString(sig->member_names[i]);
         }
-        structs[sig->id] = true;
+        if (WRITE_TRACE)
+            structs[sig->id] = true;
     }
 }
 
@@ -332,7 +345,8 @@ void Writer::writeEnum(const EnumSig *sig, signed long long value) {
             _writeString(sig->values[i].name);
             writeSInt(sig->values[i].value);
         }
-        enums[sig->id] = true;
+        if (WRITE_TRACE)
+            enums[sig->id] = true;
     }
     writeSInt(value);
 }
@@ -349,7 +363,8 @@ void Writer::writeBitmask(const BitmaskSig *sig, unsigned long long value) {
             _writeString(sig->flags[i].name);
             _writeUInt(sig->flags[i].value);
         }
-        bitmasks[sig->id] = true;
+        if (WRITE_TRACE)
+            bitmasks[sig->id] = true;
     }
     _writeUInt(value);
 }

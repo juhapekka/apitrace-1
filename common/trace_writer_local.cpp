@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "os.hpp"
 #include "os_thread.hpp"
@@ -39,6 +40,10 @@
 #include "trace_format.hpp"
 #include "os_backtrace.hpp"
 
+extern "C" {
+
+extern void stateRebuild(void);
+};
 
 namespace trace {
 
@@ -55,12 +60,53 @@ const FunctionSig free_sig = {2, "free", 1, free_args};
 static const char *realloc_args[2] = {"ptr", "size"};
 const FunctionSig realloc_sig = {3, "realloc", 2, realloc_args};
 
+#ifdef __linux__
+static const char *capture_starter_filename = \
+        "/tmp/apitrace_capture_frame_now.txt";
+#endif
+
+#ifdef ANDROID
+static const char *capture_starter_filename = \
+        "/data/data/apitrace_capture_frame_now.txt";
+#endif
 
 static void exceptionCallback(void)
 {
     localWriter.flush();
 }
 
+
+bool LocalWriter::checkSingleFrameCaptureRequest(void) {
+    struct  stat file_stat;
+    char    fileread[256];
+    int     err, rVal;
+
+    err = stat(capture_starter_filename, &file_stat);
+    if (err != 0) {
+        return false;
+    }
+
+    if (difftime(file_stat.st_mtim.tv_sec, oldFileModTime.tv_sec) < 1)
+        return false;
+
+    oldFileModTime = file_stat.st_mtim;
+
+    FILE *fp = fopen(capture_starter_filename, "ra");
+    if (!fp)
+        return false;
+
+    memset((void*)&fileread, sizeof(fileread), 1);
+    fread((void*)&fileread, 1, std::min((int)file_stat.st_size, \
+                                        (int)sizeof(fileread)), fp);
+    fclose(fp);
+
+    rVal = atoi(fileread);
+    if (rVal > 0) {
+        framesRemainingToCapture = rVal+1;
+        return true;
+    }
+    return false;
+}
 
 LocalWriter::LocalWriter() :
     acquired(0)
@@ -71,12 +117,31 @@ LocalWriter::LocalWriter() :
     // Install the signal handlers as early as possible, to prevent
     // interfering with the application's signal handling.
     os::setExceptionCallback(exceptionCallback);
+
+#if defined (__linux__) || defined (ANDROID)
+    if (getenv("APITRACE_SINGLE_FRAME_CAPTURE_MODE") != NULL) {
+        singleFrameCaptureMode = true;
+        isSwapBufferCall = false;
+        char zerostring[] = "0";
+        FILE *fp = fopen(capture_starter_filename, "wa");
+        fwrite((void*)zerostring, 1, sizeof(*zerostring), fp);
+        fclose(fp);
+
+        struct  stat file_stat;
+        stat(capture_starter_filename, &file_stat);
+        oldFileModTime = file_stat.st_mtim;
+    }
+#endif
 }
 
 LocalWriter::~LocalWriter()
 {
     os::resetExceptionCallback();
     checkProcessId();
+#if defined (__linux__) || defined (ANDROID)
+    if (singleFrameCaptureMode)
+        remove(capture_starter_filename);
+#endif
 }
 
 void
@@ -172,7 +237,31 @@ unsigned LocalWriter::beginEnter(const FunctionSig *sig, bool fake) {
     mutex.lock();
     ++acquired;
 
+    signame = sig->name;
+
+    forceWriteFlag = false;
+    isSwapBufferCall = strcmp(signame, "glXSwapBuffers")==0?true:false;
+
+    if (strncmp(signame, "glX", 3) == 0 &&
+            !(isSwapBufferCall&&framesRemainingToCapture < 0)) {
+        if (strcmp(signame, "glXWaitGL") == 0 ||
+                strcmp(signame, "glXWaitX") == 0)
+            forceWriteFlag = false;
+        else
+            forceWriteFlag = true;
+    }
+
+    if (isSwapBufferCall&&framesRemainingToCapture >= 0)
+        forceWriteFlag = true;
+
+
     checkProcessId();
+
+    if (singleFrameCaptureMode && !forceWriteFlag &&
+            framesRemainingToCapture <= 0) {
+        return 0;
+    }
+
     if (!m_file->isOpened()) {
         open();
     }
@@ -198,7 +287,10 @@ unsigned LocalWriter::beginEnter(const FunctionSig *sig, bool fake) {
 }
 
 void LocalWriter::endEnter(void) {
-    Writer::endEnter();
+    if (WRITE_TRACE) {
+        Writer::endEnter();
+    }
+
     --acquired;
     mutex.unlock();
 }
@@ -206,13 +298,41 @@ void LocalWriter::endEnter(void) {
 void LocalWriter::beginLeave(unsigned call) {
     mutex.lock();
     ++acquired;
-    Writer::beginLeave(call);
+
+    if (WRITE_TRACE) {
+        Writer::beginLeave(call);
+    }
 }
 
 void LocalWriter::endLeave(void) {
-    Writer::endLeave();
+    if (WRITE_TRACE) {
+        Writer::endLeave();
+    }
+
     --acquired;
     mutex.unlock();
+
+    if (singleFrameCaptureMode && isSwapBufferCall)
+    {
+        if (!forceWriteFlag || framesRemainingToCapture < 0) {
+            /*
+             * accept new capture requests only after old one
+             * has been handled. this is to avoid silly problems
+             * with state rebuilding.
+             */
+            if (checkSingleFrameCaptureRequest()) {
+                ::stateRebuild();
+            }
+        }
+
+        if (framesRemainingToCapture >= 0) {
+            framesRemainingToCapture--;
+        }
+
+        if (framesRemainingToCapture == 0) {
+            framesRemainingToCapture = -1;
+        }
+    }
 }
 
 void LocalWriter::flush(void) {
@@ -265,5 +385,5 @@ void fakeMemcpy(const void *ptr, size_t size) {
 }
 
 
-} /* namespace trace */
 
+} /* namespace trace */

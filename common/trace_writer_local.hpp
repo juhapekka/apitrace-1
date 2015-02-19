@@ -77,6 +77,15 @@ namespace trace {
 
         void checkProcessId();
 
+        /**
+         * Capture n following frames instead of continuous capture
+         */
+        bool checkSingleFrameCaptureRequest(void);
+
+        timespec oldFileModTime;
+        bool isSwapBufferCall;
+        const char* signame;
+
     public:
         /**
          * Should never called directly -- use localWriter singleton below

@@ -36,6 +36,13 @@
 
 #include "trace_model.hpp"
 
+/*
+ *  These flags together decide if we really should write what is being
+ *  tried to write
+ */
+#define WRITE_TRACE (!singleFrameCaptureMode || forceWriteFlag || \
+    (singleFrameCaptureMode && framesRemainingToCapture >= 0))
+
 namespace trace {
     class File;
 
@@ -49,6 +56,13 @@ namespace trace {
         std::vector<bool> enums;
         std::vector<bool> bitmasks;
         std::vector<bool> frames;
+
+        /**
+         * Flag to control capture flow.
+         */
+        bool singleFrameCaptureMode;
+        int framesRemainingToCapture;
+        bool forceWriteFlag;
 
     public:
         Writer();
