@@ -7,16 +7,17 @@ include_directories (
     ${CMAKE_SOURCE_DIR}/helpers
     ${CMAKE_BINARY_DIR}/dispatch
     ${CMAKE_SOURCE_DIR}/dispatch
+    ${CMAKE_SOURCE_DIR}/thirdparty/crc32c
 )
 
 set (CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 add_convenience_library (trace
-    crc32c.cpp
     shadow.cpp
 )
 target_link_libraries (trace
     common
+    crc32c
     ${ZLIB_LIBRARIES}
     ${SNAPPY_LIBRARIES}
 )

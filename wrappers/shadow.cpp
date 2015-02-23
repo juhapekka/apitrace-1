@@ -39,12 +39,13 @@
 #if \
     defined(__i386__) /* gcc */ || defined(_M_IX86) /* msvc */ || \
     defined(__x86_64__) /* gcc */ || defined(_M_X64) /* msvc */ || defined(_M_AMD64) /* msvc */
-#include <emmintrin.h>
+
 #define HAVE_SSE2
 
 // TODO: Detect and leverage SSE 4.1 and 4.2 at runtime
-//#define HAVE_SSE41
-//#define HAVE_SSE42
+#undef HAVE_SSE41
+#undef HAVE_SSE42
+
 #endif
 
 
@@ -76,24 +77,42 @@ rAlignPtr(T *p, uintptr_t alignment)
 }
 
 
-inline uint32_t
+#ifdef HAVE_SSE2
+
+#ifdef HAVE_SSE41
+    #define mm_stream_load_si128 _mm_stream_load_si128
+    #define mm_extract_epi32_0(x) _mm_extract_epi32(x, 0)
+    #define mm_extract_epi32_1(x) _mm_extract_epi32(x, 1)
+    #define mm_extract_epi32_2(x) _mm_extract_epi32(x, 2)
+    #define mm_extract_epi32_3(x) _mm_extract_epi32(x, 3)
+#else /* !HAVE_SSE41 */
+    #define mm_stream_load_si128 _mm_load_si128
+    #define mm_extract_epi32_0(x) _mm_cvtsi128_si32(x)
+    #define mm_extract_epi32_1(x) _mm_cvtsi128_si32(_mm_shuffle_epi32(x,_MM_SHUFFLE(1,1,1,1)))
+    #define mm_extract_epi32_2(x) _mm_cvtsi128_si32(_mm_shuffle_epi32(x,_MM_SHUFFLE(2,2,2,2)))
+    #define mm_extract_epi32_3(x) _mm_cvtsi128_si32(_mm_shuffle_epi32(x,_MM_SHUFFLE(3,3,3,3)))
+#endif /* !HAVE_SSE41 */
+
+#ifdef HAVE_SSE42
+
+#define mm_crc32_u32 _mm_crc32_u32
+
+#else /* !HAVE_SSE42 */
+
+static inline uint32_t
 mm_crc32_u32(uint32_t crc, uint32_t current)
 {
-#if __BYTE_ORDER == __BIG_ENDIAN
-    uint32_t one = current ^ swap(crc);
-    crc  = crc32c_tables[0][ one      & 0xFF] ^
-           crc32c_tables[1][(one>> 8) & 0xFF] ^
-           crc32c_tables[2][(one>>16) & 0xFF] ^
-           crc32c_tables[3][(one>>24) & 0xFF];
-#else
     uint32_t one = current ^ crc;
-    crc  = crc32c_tables[0][(one>>24) & 0xFF] ^
-           crc32c_tables[1][(one>>16) & 0xFF] ^
-           crc32c_tables[2][(one>> 8) & 0xFF] ^
-           crc32c_tables[3][ one      & 0xFF];
-#endif
+    crc  = crc32c_8x256_table[0][ one >> 24        ] ^
+           crc32c_8x256_table[1][(one >> 16) & 0xff] ^
+           crc32c_8x256_table[2][(one >>  8) & 0xff] ^
+           crc32c_8x256_table[3][ one        & 0xff];
     return crc;
 }
+
+#endif /* !HAVE_SSE42 */
+
+#endif /* HAVE_SSE2 */
 
 
 uint32_t
@@ -103,61 +122,46 @@ hashBlock(const void *p)
 
     uint32_t crc;
 
-#ifndef HAVE_SSE2
-
-    crc = crc32c_4bytes(p, BLOCK_SIZE);
-
-#else
+#ifdef HAVE_SSE2
     crc = 0;
 
     __m128i *q = (__m128i *)(void *)p;
 
     crc = ~crc;
 
-#ifdef HAVE_SSE41
-    #define mm_extract_epi32_0(x) _mm_extract_epi32(x, 0)
-    #define mm_extract_epi32_1(x) _mm_extract_epi32(x, 1)
-    #define mm_extract_epi32_2(x) _mm_extract_epi32(x, 2)
-    #define mm_extract_epi32_3(x) _mm_extract_epi32(x, 3)
-#else
-    #define _mm_stream_load_si128 _mm_load_si128
-    #define mm_extract_epi32_0(x) _mm_cvtsi128_si32(x)
-    #define mm_extract_epi32_1(x) _mm_cvtsi128_si32(_mm_shuffle_epi32(x,_MM_SHUFFLE(1,1,1,1)))
-    #define mm_extract_epi32_2(x) _mm_cvtsi128_si32(_mm_shuffle_epi32(x,_MM_SHUFFLE(2,2,2,2)))
-    #define mm_extract_epi32_3(x) _mm_cvtsi128_si32(_mm_shuffle_epi32(x,_MM_SHUFFLE(3,3,3,3)))
-#endif
-#ifndef HAVE_SSE42
-#define _mm_crc32_u32 mm_crc32_u32
-#endif
-
     for (unsigned c = BLOCK_SIZE / (4 * sizeof *q); c; --c) {
-        __m128i m0 = _mm_stream_load_si128(q++);
-        __m128i m1 = _mm_stream_load_si128(q++);
-        __m128i m2 = _mm_stream_load_si128(q++);
-        __m128i m3 = _mm_stream_load_si128(q++);
+        __m128i m0 = mm_stream_load_si128(q++);
+        __m128i m1 = mm_stream_load_si128(q++);
+        __m128i m2 = mm_stream_load_si128(q++);
+        __m128i m3 = mm_stream_load_si128(q++);
 
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_0(m0));
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_1(m0));
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_2(m0));
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_3(m0));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_0(m0));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_1(m0));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_2(m0));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_3(m0));
 
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_0(m1));
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_1(m1));
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_2(m1));
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_3(m1));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_0(m1));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_1(m1));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_2(m1));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_3(m1));
 
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_0(m2));
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_1(m2));
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_2(m2));
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_3(m2));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_0(m2));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_1(m2));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_2(m2));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_3(m2));
 
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_0(m3));
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_1(m3));
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_2(m3));
-        crc = _mm_crc32_u32(crc, mm_extract_epi32_3(m3));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_0(m3));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_1(m3));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_2(m3));
+        crc = mm_crc32_u32(crc, mm_extract_epi32_3(m3));
     }
 
     crc = ~crc;
+
+#else /* !HAVE_SSE2 */
+
+    crc = crc32c_8bytes(p, BLOCK_SIZE);
+
 #endif
 
     return crc;
