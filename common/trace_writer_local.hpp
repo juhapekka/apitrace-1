@@ -83,6 +83,7 @@ namespace trace {
         bool checkSingleFrameCaptureRequest(void);
 
         timespec oldFileModTime;
+        int displayListNumber;
         bool isSwapBufferCall;
         const char* signame;
 

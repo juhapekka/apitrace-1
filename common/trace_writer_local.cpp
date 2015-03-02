@@ -122,6 +122,7 @@ LocalWriter::LocalWriter() :
     if (getenv("APITRACE_SINGLE_FRAME_CAPTURE_MODE") != NULL) {
         singleFrameCaptureMode = true;
         isSwapBufferCall = false;
+        displayListNumber = 0;
         char zerostring[] = "0";
         FILE *fp = fopen(capture_starter_filename, "wa");
         fwrite((void*)zerostring, 1, sizeof(*zerostring), fp);
@@ -242,6 +243,12 @@ unsigned LocalWriter::beginEnter(const FunctionSig *sig, bool fake) {
     forceWriteFlag = false;
     isSwapBufferCall = strcmp(signame, "glXSwapBuffers")==0?true:false;
 
+    if (strcmp(signame, "glGenLists")==0)
+        displayListNumber++;
+
+    if (displayListNumber > 0)
+        forceWriteFlag = true;
+
     if (strncmp(signame, "glX", 3) == 0 &&
             !(isSwapBufferCall&&framesRemainingToCapture < 0)) {
         if (strcmp(signame, "glXWaitGL") == 0 ||
@@ -332,6 +339,10 @@ void LocalWriter::endLeave(void) {
         if (framesRemainingToCapture == 0) {
             framesRemainingToCapture = -1;
         }
+    }
+
+    if (forceWriteFlag && strcmp(signame, "glEndList")==0) {
+        displayListNumber--;
     }
 }
 
