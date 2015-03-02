@@ -251,4 +251,12 @@ void APIENTRY glWeightPointerOESBounds(GLint size, GLenum type, GLsizei stride, 
 #endif /* ANDROID */
 
 
+/*
+ * FIXME
+ * dummy. maybe fill in later.
+ */
+extern "C" void stateRebuild(void) {
+   return;
+}
+
 '''

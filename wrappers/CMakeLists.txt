@@ -345,6 +345,8 @@ elseif (X11_FOUND)
         dlsym.cpp
     )
 
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -fno-strict-aliasing")
+
     add_dependencies (glxtrace glproc)
 
     set_target_properties (glxtrace PROPERTIES
