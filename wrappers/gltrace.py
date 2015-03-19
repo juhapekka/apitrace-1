@@ -290,6 +290,9 @@ class GlTracer(Tracer):
             
             print 'static %s _wrapProcAddress(%s procName, %s procPtr);' % (retType, argType, retType)
             print
+            if self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+               print 'extern \"C\" void storenewtextures(const GLsizei n, const GLuint *textures);'
+               print 'extern \"C\" void removetextures(const GLsizei n, const GLuint * textures);'
             
             Tracer.traceApi(self, api)
             
@@ -744,6 +747,16 @@ class GlTracer(Tracer):
         self.shadowBufferProlog(function)
 
         Tracer.traceFunctionImplBody(self, function)
+
+        if function.name == 'glGenTextures' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+            print '    storenewtextures(n, textures);'
+
+        if function.name == 'glBindTexture' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+            print '    storenewtextures(1, &texture);'
+
+        if function.name == 'glDeleteTextures' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+            print '    removetextures(n, textures);'
+
 
     # These entrypoints are only expected to be implemented by tools;
     # drivers will probably not implement them.

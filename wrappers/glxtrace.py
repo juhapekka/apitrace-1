@@ -226,6 +226,148 @@ void * dlopen(const char *filename, int flag)
 
 
 /*
+ * Bookkeeping of textures for single frame capture mode.
+ */
+
+typedef struct {
+    /*
+     * already_saved flag to note if this texture was already written
+     * to trace file.
+     */
+    bool    already_saved;
+    GLenum  texture;
+} texlistItem;
+
+unsigned int live_textures(0);
+size_t       texturelist_size(0);
+texlistItem  *texturelist(NULL);
+const int    growsize(2048);
+
+extern "C" void storenewtextures(const GLsizei n, const GLuint * textures)
+{
+    if (texturelist_size <= live_textures+n)
+    {
+        void* newtexturelist = realloc((void*)texturelist,
+                                    (texturelist_size+growsize)
+                                    *sizeof(texlistItem));
+        if (!newtexturelist) {
+            os::log("apitrace: warning: realloc at storenewtextures failed\n");
+            return;
+        }
+        texturelist = (texlistItem*)newtexturelist;
+        texturelist_size += growsize;
+    }
+
+    for (unsigned c = 0, c2; c < n; c++) {
+        for (c2 = 0; c2 < live_textures; c2++) {
+            if (texturelist[c2].texture == textures[c]) {
+                break;
+            }
+        }
+        if (texturelist[c2].texture != textures[c] && textures[c] != 0) {
+            texturelist[live_textures].texture = textures[c];
+            texturelist[live_textures].already_saved = false;
+            live_textures++;
+        }
+    }
+}
+
+extern "C" void removetextures(const GLsizei n, const GLuint *textures)
+{
+    for (unsigned c = 0; c < n; c++) {
+        unsigned c2, s;
+
+        for (c2 = 0, s = 0; c2+s < live_textures; c2++) {
+
+            /*
+             * found texture to be taken out?
+             */
+            if (texturelist[c2].texture == textures[c])
+                s++;
+
+            if (s > 0) {
+                /*
+                 * use memcpy here to be future-proof. Assumption is here
+                 * will be added things at least because of texture view.
+                 */
+                memcpy((void*)(&texturelist[c2]), (void*)(&texturelist[c2+s]),
+                               sizeof(texlistItem));
+            }
+        }
+        live_textures -= s;
+    }
+}
+
+void fakeglGenTextture(GLenum texture)
+{
+    unsigned _call = trace::localWriter.beginEnter(&_glGenTextures_sig);
+    trace::localWriter.beginArg(0);
+    trace::localWriter.writeSInt(1);
+    trace::localWriter.endArg();
+    trace::localWriter.endEnter();
+    trace::localWriter.beginLeave(_call);
+    trace::localWriter.beginArg(1);
+    trace::localWriter.beginArray(1);
+    trace::localWriter.beginElement();
+    trace::localWriter.writeUInt(texture);
+    trace::localWriter.endElement();
+    trace::localWriter.endArray();
+    trace::localWriter.endArg();
+    trace::localWriter.endLeave();
+}
+
+void fakeglTexImage2D(GLenum target, GLint level, GLint internalformat,
+                      GLsizei width, GLsizei height, GLint border,
+                      GLenum format, GLenum type, const GLvoid * pixels)
+{
+    unsigned _call = trace::localWriter.beginEnter(&_glTexImage2D_sig);
+    trace::localWriter.beginArg(0);
+    trace::localWriter.writeEnum(&_enumGLenum_sig, target);
+    trace::localWriter.endArg();
+    trace::localWriter.beginArg(1);
+    trace::localWriter.writeSInt(level);
+    trace::localWriter.endArg();
+    trace::localWriter.beginArg(2);
+    trace::localWriter.writeEnum(&_enumGLenum_sig, internalformat);
+    trace::localWriter.endArg();
+    trace::localWriter.beginArg(3);
+    trace::localWriter.writeSInt(width);
+    trace::localWriter.endArg();
+    trace::localWriter.beginArg(4);
+    trace::localWriter.writeSInt(height);
+    trace::localWriter.endArg();
+    trace::localWriter.beginArg(5);
+    trace::localWriter.writeSInt(border);
+    trace::localWriter.endArg();
+    trace::localWriter.beginArg(6);
+    trace::localWriter.writeEnum(&_enumGLenum_sig, format);
+    trace::localWriter.endArg();
+    trace::localWriter.beginArg(7);
+    trace::localWriter.writeEnum(&_enumGLenum_sig, type);
+    trace::localWriter.endArg();
+    trace::localWriter.beginArg(8);
+
+    gltrace::Context *ctx = gltrace::getContext();
+    GLint _unpack_buffer = 0;
+    if (ctx->profile.desktop())
+        _glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &_unpack_buffer);
+
+    if (_unpack_buffer) {
+        trace::localWriter.writePointer((uintptr_t)pixels);
+    }
+    else {
+        trace::localWriter.writeBlob(pixels, _glTexImage2D_size(format,
+                                                                type, width,
+                                                                height));
+    }
+    trace::localWriter.endArg();
+    trace::localWriter.endEnter();
+    trace::localWriter.beginLeave(_call);
+    trace::localWriter.endLeave();
+}
+
+
+/*
  * For rebuilding gl state in single frame capture mode.
  */
 extern "C" void stateRebuild(void)
@@ -557,6 +699,309 @@ extern "C" void stateRebuild(void)
             }
         }
     }
+
+    /*
+     * textures
+     */
+
+    /*
+     * store texture bindings before continue with anything
+     */
+    GLuint activeTexture(0), maxTexUnit(0);
+    const GLenum texturebinding[] = {GL_TEXTURE_BINDING_1D,
+            GL_TEXTURE_BINDING_1D_ARRAY, GL_TEXTURE_BINDING_2D,
+            GL_TEXTURE_BINDING_2D_ARRAY, GL_TEXTURE_BINDING_2D_MULTISAMPLE,
+            GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY, GL_TEXTURE_BINDING_3D,
+            GL_TEXTURE_BINDING_BUFFER, GL_TEXTURE_BINDING_CUBE_MAP,
+            GL_TEXTURE_BINDING_RECTANGLE };
+
+    const GLenum textureEnabled[] = {GL_TEXTURE_1D, GL_TEXTURE_2D,
+                                     GL_TEXTURE_3D };
+
+    _glGetIntegerv(GL_ACTIVE_TEXTURE , (GLint*)&activeTexture);
+    _glGetIntegerv(GL_MAX_TEXTURE_UNITS, (GLint*)&maxTexUnit);
+
+    GLenum storedTextureBindings[maxTexUnit][sizeof(texturebinding)/
+            sizeof(texturebinding[0])];
+
+    GLenum storedTextureEnabled[maxTexUnit][sizeof(textureEnabled)/
+            sizeof(textureEnabled[0])];
+
+    for (unsigned c = 0; c < sizeof(maxTexUnit); c++) {
+        _glActiveTexture(GL_TEXTURE0+c);
+
+        for (unsigned c2 = 0; c2  < sizeof(texturebinding)/
+             sizeof(texturebinding[0]); c2++ ) {
+            _glGetIntegerv(texturebinding[c2],
+                           (GLint*)&storedTextureBindings[c][c2]);
+            if (_glGetError() != GL_NO_ERROR)
+                storedTextureBindings[c][c2] = 0;
+        }
+
+        for (unsigned c2 = 0; c2  < sizeof(textureEnabled)/
+             sizeof(textureEnabled[0]); c2++ ) {
+
+            _glGetIntegerv(textureEnabled[c2],
+                           (GLint*)&storedTextureEnabled[c][c2]);
+
+            if (_glGetError() != GL_NO_ERROR)
+                storedTextureEnabled[c][c2] = 0;
+        }
+    }
+
+    int bytes(0);
+    GLubyte* pixels(NULL);
+
+    const struct {
+        GLenum texParam;
+        GLint  pDefault;
+    } texParams[] = {
+        {GL_DEPTH_STENCIL_TEXTURE_MODE, GL_DEPTH_COMPONENT},
+        {GL_TEXTURE_MAG_FILTER, GL_LINEAR},
+        {GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR},
+        {GL_TEXTURE_MIN_LOD, -1000},
+        {GL_TEXTURE_MAX_LOD, 1000},
+        {GL_TEXTURE_BASE_LEVEL, 0},
+/*        {GL_TEXTURE_MAX_LEVEL, 1000},*/
+        {GL_TEXTURE_SWIZZLE_R, GL_RED},
+        {GL_TEXTURE_SWIZZLE_G, GL_GREEN},
+        {GL_TEXTURE_SWIZZLE_B, GL_BLUE},
+        {GL_TEXTURE_SWIZZLE_A, GL_ALPHA},
+        {GL_TEXTURE_WRAP_S, GL_REPEAT},
+        {GL_TEXTURE_WRAP_T, GL_REPEAT},
+        {GL_TEXTURE_WRAP_R, GL_REPEAT},
+        {GL_TEXTURE_PRIORITY, 1},
+        {GL_TEXTURE_COMPARE_MODE, GL_NONE },
+        {GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL },
+        {GL_DEPTH_TEXTURE_MODE, GL_LUMINANCE },
+        {GL_GENERATE_MIPMAP, GL_FALSE }
+    };
+
+//    {GL_TEXTURE_BORDER_COLOR,
+
+    for (unsigned c = 0; c < live_textures; c++) {
+        if (texturelist[c].already_saved == true)
+            continue;
+        /*
+         * write glGenTextures just to trace but
+         * not call actual glGenTextures function.
+         */
+        fakeglGenTextture(texturelist[c].texture);
+
+        glBindTexture(GL_TEXTURE_2D, texturelist[c].texture);
+
+        for (unsigned c2 = 0; c2 < sizeof(texParams)/sizeof(texParams[0]);
+             c2++ ) {
+
+            GLint texRVal;
+
+            _glGetTexParameteriv(GL_TEXTURE_2D, texParams[c2].texParam,
+                                 (GLint*)&texRVal);
+
+            if (texRVal != texParams[c2].pDefault &&
+                    glGetError() == GL_NO_ERROR) {
+                glTexParameteri(GL_TEXTURE_2D, texParams[c2].texParam,
+                                texRVal);
+            }
+        }
+
+        typedef struct {
+            GLenum texParam;
+            GLint  pDefault;
+            GLint received;
+        } texParamsglGet;
+
+        struct {
+            GLenum         pname;
+            unsigned       pAmount;
+            texParamsglGet params[8];
+            GLvoid         *received;
+        } texParamsArrays[] = {
+        {GL_TEXTURE_COORD_ARRAY_POINTER, 3,
+            {{GL_TEXTURE_COORD_ARRAY_SIZE, 4},
+             {GL_TEXTURE_COORD_ARRAY_TYPE, GL_FLOAT},
+             {GL_TEXTURE_COORD_ARRAY_STRIDE, 0}
+            }},
+
+        {GL_COLOR_ARRAY_POINTER, 3,
+            {{GL_COLOR_ARRAY_SIZE, 4},
+             {GL_COLOR_ARRAY_TYPE, GL_FLOAT},
+             {GL_COLOR_ARRAY_STRIDE, 0}
+            }},
+
+        {GL_EDGE_FLAG_ARRAY_POINTER, 0},
+        {GL_FOG_COORD_ARRAY_POINTER, 0},
+        {GL_FEEDBACK_BUFFER_POINTER, 0},
+        {GL_INDEX_ARRAY_POINTER, 0},
+        {GL_NORMAL_ARRAY_POINTER, 0},
+        {GL_SECONDARY_COLOR_ARRAY_POINTER, 0},
+        {GL_SELECTION_BUFFER_POINTER, 0},
+
+        {GL_VERTEX_ARRAY_POINTER, 3,
+            {{GL_VERTEX_ARRAY_SIZE, 4},
+             {GL_VERTEX_ARRAY_TYPE, GL_FLOAT},
+             {GL_VERTEX_ARRAY_STRIDE, 0}
+            }}
+        };
+
+        for (unsigned c2 = 0; c2 < sizeof(texParamsArrays)/
+             sizeof(texParamsArrays[0]); c2++ ) {
+
+            _glGetPointerv(texParamsArrays[c2].pname,
+                          (GLvoid**)&texParamsArrays[c2].received);
+
+            if (_glGetError() != GL_NO_ERROR)
+                texParamsArrays[c2].received = NULL;
+
+            /*
+             * such array in use?
+             */
+            if (texParamsArrays[c2].received == NULL)
+                continue;
+
+            for (unsigned c3 = 0; c3 < texParamsArrays[c2].pAmount; c3++ ) {
+
+                _glGetIntegerv(texParamsArrays[c2].params[c3].texParam,
+                            (GLint*)&texParamsArrays[c2].params[c3].received);
+
+                if (_glGetError() != GL_NO_ERROR)
+                    texParamsArrays[c2].params[c3].received =
+                            texParamsArrays[c2].params[c3].pDefault;
+            }
+
+            switch (texParamsArrays[c2].pname) {
+            default:
+                break;
+            case GL_TEXTURE_COORD_ARRAY_POINTER:
+                glTexCoordPointer(
+                            texParamsArrays[c2].params[0].received,
+                            texParamsArrays[c2].params[1].received,
+                            texParamsArrays[c2].params[2].received,
+                            texParamsArrays[c2].received);
+                break;
+            case GL_COLOR_ARRAY_POINTER:
+                glColorPointer(
+                            texParamsArrays[c2].params[0].received,
+                            texParamsArrays[c2].params[1].received,
+                            texParamsArrays[c2].params[2].received,
+                            texParamsArrays[c2].received);
+                break;
+            case GL_EDGE_FLAG_ARRAY_POINTER:
+                break;
+            case GL_FOG_COORD_ARRAY_POINTER:
+                break;
+            case GL_FEEDBACK_BUFFER_POINTER:
+                break;
+            case GL_INDEX_ARRAY_POINTER:
+                break;
+            case GL_NORMAL_ARRAY_POINTER:
+                break;
+            case GL_SECONDARY_COLOR_ARRAY_POINTER:
+                break;
+            case GL_SELECTION_BUFFER_POINTER:
+                break;
+            case GL_VERTEX_ARRAY_POINTER:
+                glVertexPointer(
+                            texParamsArrays[c2].params[0].received,
+                            texParamsArrays[c2].params[1].received,
+                            texParamsArrays[c2].params[2].received,
+                            texParamsArrays[c2].received);
+                break;
+            }
+        }
+
+        GLint textureMaxLevel;
+
+        _glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL,
+                             &textureMaxLevel);
+
+        for( unsigned c2 = 0; c2 < textureMaxLevel; c2++ ) {
+            GLint textureWidth;
+
+            _glGetTexLevelParameteriv(GL_TEXTURE_2D, c2, GL_TEXTURE_WIDTH,
+                                      &textureWidth);
+            /*
+             * Different gl implementations report differently if there was
+             * no more texture level available.
+             */
+            if (textureWidth == 0 || _glGetError() != GL_NO_ERROR)
+                break;
+
+            GLint textureHeight, textureDepth, textureIFormat;
+
+            _glGetTexLevelParameteriv(GL_TEXTURE_2D, c2, GL_TEXTURE_HEIGHT,
+                &textureHeight);
+
+            _glGetTexLevelParameteriv(GL_TEXTURE_2D, c2, GL_TEXTURE_DEPTH,
+                &textureDepth);
+
+            _glGetTexLevelParameteriv(GL_TEXTURE_2D, c2,
+                GL_TEXTURE_INTERNAL_FORMAT, &textureIFormat);
+
+            /*
+             * FIXME:
+             * Cannot get compressed textures, need to play with them
+             * differently. Hardcode GL_RGBA here for now.
+             */
+            textureIFormat = GL_RGBA;
+
+            if (bytes < textureWidth*textureHeight*4)
+            {
+                bytes = textureWidth*textureHeight*4;
+                pixels = (GLubyte*)realloc(pixels,bytes);
+            }
+
+            _glGetTexImage(GL_TEXTURE_2D,c2, textureIFormat,GL_UNSIGNED_BYTE,
+                pixels);
+
+            fakeglTexImage2D(GL_TEXTURE_2D, c2, textureIFormat, textureWidth,
+                textureHeight, 0, textureIFormat, GL_UNSIGNED_BYTE,
+                (GLvoid*)pixels);
+        }
+
+        texturelist[c].already_saved = true;
+    }
+    free(pixels);
+
+    /*
+     *  Restore texture bindings
+     */
+    for (unsigned c = 0; c < sizeof(maxTexUnit); c++) {
+
+        unsigned setUnit;
+
+        if (c == 0)
+            setUnit = 1;
+        else
+            setUnit = 0;
+
+        for (unsigned c2 = 0; c2  < sizeof(texturebinding)/
+             sizeof(texturebinding[0]); c2++ )
+            if (storedTextureBindings[c][c2] != 0) {
+
+                if (setUnit == 0) {
+                    glActiveTexture(GL_TEXTURE0+c);
+                }
+
+                glBindTexture(GL_TEXTURE_2D,
+                              storedTextureBindings[c][c2]);
+                setUnit++;
+            }
+
+        for (unsigned c2 = 0; c2  < sizeof(textureEnabled)/
+             sizeof(textureEnabled[0]); c2++ )
+            if (storedTextureEnabled[c][c2] == GL_TRUE) {
+                glActiveTexture(GL_TEXTURE0+c);
+
+                glEnable(textureEnabled[c2]);
+                setUnit++;
+            }
+    }
+
+    if (activeTexture != GL_TEXTURE0)
+        glActiveTexture(activeTexture);
+    else
+        _glActiveTexture(activeTexture);
 
     return;
 }
