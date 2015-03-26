@@ -368,6 +368,326 @@ void fakeglTexImage2D(GLenum target, GLint level, GLint internalformat,
 
 
 /*
+ * Bookkeeping of shaders for single frame capture mode.
+ */
+typedef struct {
+    bool        already_saved;
+    GLenum      type;
+    GLuint      shader;
+    GLsizei     count;
+    GLchar**    string;
+    GLint*      length;
+} shaderlistItem;
+
+unsigned int    live_shaders(0);
+size_t          shaderlist_size(0);
+shaderlistItem  *shaderlist(NULL);
+
+extern "C" void storenewshader(GLenum type, GLuint _result)
+{
+    unsigned c;
+
+    if (shaderlist_size <= live_shaders+1)
+    {
+        void* newshaderlist = realloc((void*)shaderlist,
+                                    (shaderlist_size+growsize)
+                                    *sizeof(shaderlistItem));
+        if (!newshaderlist) {
+            os::log("apitrace: warning: realloc at storenewshader failed\n");
+            return;
+        }
+        shaderlist = (shaderlistItem*)newshaderlist;
+        shaderlist_size += growsize;
+    }
+
+    for (c = 0; c < live_shaders; c++) {
+        if (shaderlist[c].shader == _result) {
+            break;
+        }
+    }
+    if (shaderlist[c].shader != _result && _result != 0) {
+        shaderlist[live_shaders].shader = _result;
+        shaderlist[live_shaders].type = type;
+        shaderlist[live_shaders].already_saved = false;
+        shaderlist[live_shaders].count = 0;
+        shaderlist[live_shaders].string = NULL;
+        shaderlist[live_shaders].length = NULL;
+        live_shaders++;
+    }
+}
+
+extern "C" void storeshadersource(GLuint shader, GLsizei count,
+                                  const GLchar * const * string,
+                                  const GLint *length)
+{
+    unsigned        c;
+    shaderlistItem* currentShader;
+
+    /*
+     * find our shader or make new if everything failed.
+     * though, should not be need to make new shader instance
+     * here (I think)
+     */
+    for (c = 0; c < live_shaders; c++) {
+        if (shaderlist[c].shader == shader) {
+            if(shaderlist[c].string != NULL) {
+                for (unsigned i = 0; i < shaderlist[c].count; i++)
+                    free(shaderlist[c].string[i]);
+            }
+            free(shaderlist[c].string);
+            free(shaderlist[c].length);
+            break;
+        }
+    }
+    if (shaderlist[c].shader != shader && shader != 0) {
+        shaderlist[live_shaders].shader = shader;
+        shaderlist[live_shaders].already_saved = false;
+        shaderlist[live_shaders].count = 0;
+        shaderlist[live_shaders].string = NULL;
+        shaderlist[live_shaders].length = NULL;
+        c =  live_shaders++;
+    }
+
+    currentShader = &shaderlist[c];
+    currentShader->count = count;
+
+    if (length != NULL) {
+        currentShader->length = (GLint*)malloc(currentShader->count
+                                               *sizeof(GLint*));
+    }
+
+    currentShader->string = (GLchar**)malloc(sizeof(GLchar*)*
+                                             currentShader->count);
+    if (currentShader->string == NULL) {
+        os::log("apitrace: warning: malloc at storeshadersource failed\n");
+        return;
+    }
+
+    for (c = 0; c < count; c++)
+    {
+        unsigned thisLength(0);
+
+        if (length != NULL)
+            thisLength = length[c];
+
+        if (thisLength == 0)
+            thisLength = strlen(string[c])+1;
+
+        if (currentShader->length != NULL)
+            currentShader->length[c] = thisLength;
+
+        currentShader->string[c] = (GLchar*)malloc(thisLength);
+        if (currentShader->string[c] == NULL) {
+            /*
+             * return here is not really safe but at least report
+             * what happened!
+             */
+            os::log("apitrace: warning: malloc at storeshadersource failed\n");
+            return;
+        }
+        memcpy(currentShader->string[c], string[c], thisLength);
+    }
+}
+
+extern "C" void removeshader(GLuint shader)
+{
+
+}
+
+void fakeglCreateShader(GLenum type, GLuint name) {
+    unsigned _call = trace::localWriter.beginEnter(&_glCreateShader_sig);
+    trace::localWriter.beginArg(0);
+    trace::localWriter.writeEnum(&_enumGLenum_sig, type);
+    trace::localWriter.endArg();
+    trace::localWriter.endEnter();
+    trace::localWriter.beginLeave(_call);
+    trace::localWriter.beginReturn();
+    trace::localWriter.writeUInt(name);
+    trace::localWriter.endReturn();
+    trace::localWriter.endLeave();
+}
+
+void fakeglShaderSource(GLuint shader, GLsizei count,
+                        const GLchar * const * string,
+                        const GLint * length)
+{
+    unsigned _call = trace::localWriter.beginEnter(&_glShaderSource_sig);
+    trace::localWriter.beginArg(0);
+    trace::localWriter.writeUInt(shader);
+    trace::localWriter.endArg();
+    trace::localWriter.beginArg(1);
+    trace::localWriter.writeSInt(count);
+    trace::localWriter.endArg();
+    trace::localWriter.beginArg(2);
+
+    if (string) {
+        size_t _cCconstGLchar1 = count > 0 ? count : 0;
+        trace::localWriter.beginArray(_cCconstGLchar1);
+        for (size_t _iCconstGLchar1 = 0; _iCconstGLchar1 < _cCconstGLchar1;
+             ++_iCconstGLchar1) {
+
+            trace::localWriter.beginElement();
+            trace::localWriter.writeString(
+                    reinterpret_cast<const char *>((string)[_iCconstGLchar1]),
+                        _glShaderSource_length(string, length,
+                                               _iCconstGLchar1));
+
+            trace::localWriter.endElement();
+        }
+        trace::localWriter.endArray();
+    } else {
+        trace::localWriter.writeNull();
+    }
+    trace::localWriter.endArg();
+    trace::localWriter.beginArg(3);
+
+    if (length) {
+        size_t _cCGLint34 = count > 0 ? count : 0;
+        trace::localWriter.beginArray(_cCGLint34);
+
+        for (size_t _iCGLint34 = 0; _iCGLint34 < _cCGLint34; ++_iCGLint34) {
+            trace::localWriter.beginElement();
+            trace::localWriter.writeSInt((length)[_iCGLint34]);
+            trace::localWriter.endElement();
+        }
+        trace::localWriter.endArray();
+    } else {
+        trace::localWriter.writeNull();
+    }
+
+    trace::localWriter.endArg();
+    trace::localWriter.endEnter();
+
+    trace::localWriter.beginLeave(_call);
+    trace::localWriter.endLeave();
+}
+
+void fakeglCreateProgram(GLuint name) {
+    unsigned _call = trace::localWriter.beginEnter(&_glCreateProgram_sig);
+    trace::localWriter.endEnter();
+    trace::localWriter.beginLeave(_call);
+    trace::localWriter.beginReturn();
+    trace::localWriter.writeUInt(name);
+    trace::localWriter.endReturn();
+    trace::localWriter.endLeave();
+}
+
+typedef struct progAttrib {
+    struct progAttrib*  next;
+    GLint               index;
+    GLchar*             name;
+} progAttrib;
+
+typedef struct {
+    GLint       program;
+    progAttrib* attribLL;
+} proglistItem;
+
+unsigned int live_programs(0);
+size_t       programlist_size(0);
+proglistItem *programlist(NULL);
+
+extern "C" void storenewprogram(const GLuint program)
+{
+    if (programlist_size <= live_programs+1)
+    {
+        void* new_programlist = realloc((void*)programlist,
+                                    (programlist_size+growsize)
+                                    *sizeof(proglistItem));
+        if (!new_programlist) {
+            os::log("apitrace: warning: realloc at storenewprogram failed\n");
+            return;
+        }
+        programlist = (proglistItem*)new_programlist;
+        programlist_size += growsize;
+    }
+
+    unsigned c;
+
+    for (c = 0; c < live_programs; c++) {
+        if (programlist[c].program == program) {
+            break;
+        }
+    }
+    if (programlist[c].program != program && program != 0) {
+        programlist[live_programs].program = program;
+        programlist[live_programs].attribLL = (progAttrib*)NULL;
+        live_programs++;
+    }
+}
+
+void fakeglBindAttribLocation(GLuint program, GLuint index,
+                              const GLchar * name)
+{
+    unsigned _call = trace::localWriter.beginEnter(&_glBindAttribLocation_sig);
+    trace::localWriter.beginArg(0);
+    trace::localWriter.writeUInt(program);
+    trace::localWriter.endArg();
+    trace::localWriter.beginArg(1);
+    trace::localWriter.writeUInt(index);
+    trace::localWriter.endArg();
+    trace::localWriter.beginArg(2);
+    trace::localWriter.writeString(reinterpret_cast<const char *>(name));
+    trace::localWriter.endArg();
+    trace::localWriter.endEnter();
+    trace::localWriter.beginLeave(_call);
+    trace::localWriter.endLeave();
+}
+
+extern "C" void storeboundattrib(const GLuint program, GLuint index,
+                                 const GLchar * name)
+{
+    unsigned    c;
+    progAttrib** cAttrib;
+
+    for (c = 0; c <live_programs; c++) {
+
+        if (programlist[c].program == program)
+            break;
+    }
+
+    if (programlist[c].program == program && program != 0) {
+        for (cAttrib = &(programlist[c].attribLL); *cAttrib != NULL;
+             cAttrib = &((**cAttrib).next)) {
+            /*
+             * get one block which also has space for the name in it
+             */
+            *cAttrib = (progAttrib*)calloc(1, sizeof(progAttrib)
+                                               + strlen(name)+1);
+            (*cAttrib)->index = index;
+            (*cAttrib)->name = ((GLchar*)(*cAttrib))+sizeof(progAttrib);
+            memcpy((void*)(*cAttrib)->name, (void*)name, strlen(name));
+        }
+    }
+}
+
+
+extern "C" void removeprogram(const GLuint program)
+{
+    unsigned c2, s;
+
+    for (c2 = 0, s = 0; c2+s < live_programs; c2++) {
+        if (programlist[c2].program == program) {
+            for (progAttrib* attrib = programlist[c2].attribLL;
+                 attrib != NULL;) {
+
+                progAttrib* attribtemp = attrib;
+                attrib = attrib->next;
+                free((void*)attribtemp);
+            }
+            s++;
+        }
+
+        if (s > 0) {
+            memcpy((void*)(&programlist[c2]), (void*)(&programlist[c2+s]),
+                           sizeof(proglistItem));
+        }
+    }
+    live_programs -= s;
+}
+
+
+/*
  * For rebuilding gl state in single frame capture mode.
  */
 extern "C" void stateRebuild(void)
@@ -1002,6 +1322,70 @@ extern "C" void stateRebuild(void)
         glActiveTexture(activeTexture);
     else
         _glActiveTexture(activeTexture);
+
+
+    /*
+     * programs, shaders, uniforms.
+     */
+    GLint current_program(0);
+
+    _glGetIntegerv(GL_CURRENT_PROGRAM, &current_program);
+
+
+    for (unsigned c = 0; c < live_shaders; c++) {
+        fakeglCreateShader(shaderlist[c].type, shaderlist[c].shader);
+        fakeglShaderSource(shaderlist[c].shader, shaderlist[c].count,
+                           shaderlist[c].string, shaderlist[c].length);
+        glCompileShader(shaderlist[c].shader);
+    }
+
+    GLint   aShaderListSize(0);
+    GLuint* aShaderList(NULL);
+
+    for (unsigned c = 0; c < live_programs; c++) {
+        fakeglCreateProgram(programlist[c].program);
+
+        GLint   attachedShaders(0), shCount(0);
+
+        _glGetProgramiv(programlist[c].program, GL_ATTACHED_SHADERS,
+                        &attachedShaders);
+
+        if (aShaderListSize < attachedShaders) {
+            void* newlist = realloc(aShaderList,
+                                    attachedShaders*sizeof(GLint));
+            if (newlist == NULL) {
+                os::log("apitrace: warning: realloc at staterebuild failed\n");
+                continue;
+            }
+            aShaderList = (GLuint*)newlist;
+        }
+
+        _glGetAttachedShaders(programlist[c].program, attachedShaders,
+                              &shCount, aShaderList );
+
+        for (unsigned c2 = 0; c2 < shCount; c2++) {
+            /*
+             * This ought to cause boat load of GL_INVALID_OPERATION
+             * errors because these shaders are already attached here,
+             * just ignore the errors because this is something we want
+             * to end up into the trace file.
+             */
+            glAttachShader(programlist[c].program, aShaderList[c2]);
+        }
+
+        for (progAttrib* attrib = programlist[c].attribLL; attrib != NULL;
+             attrib = attrib->next) {
+            fakeglBindAttribLocation(programlist[c].program, attrib->index,
+                                     attrib->name);
+        }
+        glLinkProgram(programlist[c].program);
+
+
+    }
+    free ((void*)aShaderList);
+
+    if (current_program != 0)
+        glUseProgram(current_program);
 
     return;
 }

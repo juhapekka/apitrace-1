@@ -293,7 +293,13 @@ class GlTracer(Tracer):
             if self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
                print 'extern \"C\" void storenewtextures(const GLsizei n, const GLuint *textures);'
                print 'extern \"C\" void removetextures(const GLsizei n, const GLuint * textures);'
-            
+               print 'extern \"C\" void storenewshader(GLenum type, const GLuint shader);'
+               print 'extern \"C\" void removeshader(const GLuint shader);'
+               print 'extern \"C\" void storeshadersource(GLuint shader, GLsizei count, const GLchar * const * string, const GLint *length);'
+               print 'extern \"C\" void storenewprogram(const GLuint program);'
+               print 'extern \"C\" void removeprogram(const GLuint program);'
+               print 'extern \"C\" void storeboundattrib(const GLuint program, GLuint index, const GLchar * name);'
+
             Tracer.traceApi(self, api)
             
             print 'static %s _wrapProcAddress(%s procName, %s procPtr) {' % (retType, argType, retType)
@@ -756,6 +762,24 @@ class GlTracer(Tracer):
 
         if function.name == 'glDeleteTextures' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
             print '    removetextures(n, textures);'
+
+        if function.name == 'glCreateShader' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+            print '    storenewshader(type, _result);'
+
+        if function.name == 'glShaderSource' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+            print '    storeshadersource(shader, count, string, length);'
+
+        if function.name == 'glDeleteShader' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+            print '    removeshader(shader);'
+
+        if function.name == 'glCreateProgram' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+            print '    storenewprogram(_result);'
+
+        if function.name == 'glDeteleProgram' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+            print '    removeprogram(program);'
+
+        if function.name == 'glBindAttribLocation' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+            print '    storeboundattrib(program, index, name);'
 
 
     # These entrypoints are only expected to be implemented by tools;
