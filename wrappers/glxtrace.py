@@ -687,6 +687,157 @@ extern "C" void removeprogram(const GLuint program)
 }
 
 
+const struct {
+    GLenum targetType;
+    GLenum targetBinding;
+} bufferObjects[] =
+{
+    {GL_ARRAY_BUFFER, GL_ARRAY_BUFFER_BINDING},
+    {GL_ATOMIC_COUNTER_BUFFER, GL_ATOMIC_COUNTER_BUFFER_BINDING},
+    {GL_COPY_READ_BUFFER, GL_COPY_READ_BUFFER_BINDING},
+    {GL_COPY_WRITE_BUFFER, GL_COPY_WRITE_BUFFER_BINDING},
+    {GL_DISPATCH_INDIRECT_BUFFER, GL_DISPATCH_INDIRECT_BUFFER_BINDING},
+    {GL_DRAW_INDIRECT_BUFFER, GL_DRAW_INDIRECT_BUFFER_BINDING},
+    {GL_ELEMENT_ARRAY_BUFFER, GL_ELEMENT_ARRAY_BUFFER_BINDING},
+    {GL_PIXEL_PACK_BUFFER, GL_PIXEL_PACK_BUFFER_BINDING},
+    {GL_PIXEL_UNPACK_BUFFER, GL_PIXEL_UNPACK_BUFFER_BINDING},
+    /*{GL_QUERY_BUFFER, 0},*/
+    {GL_SHADER_STORAGE_BUFFER, GL_SHADER_STORAGE_BUFFER_BINDING},
+    /*{GL_TEXTURE_BUFFER, 0},*/
+    {GL_TRANSFORM_FEEDBACK_BUFFER, GL_TRANSFORM_FEEDBACK_BUFFER_BINDING},
+    {GL_UNIFORM_BUFFER, GL_UNIFORM_BUFFER_BINDING}
+};
+
+
+typedef struct {
+    /*
+     * already_saved flag to note if this buffer was already written
+     * to trace file.
+     */
+    bool       already_saved;
+    GLenum     buffer;
+    /* couldn't query size later so it'll be stored at glBufferData */
+    GLsizeiptr buffer_size;
+    GLenum     usage; /*GL_STREAM_DRAW, GL_STREAM_READ, GL_STREAM_COPY,
+                    GL_STATIC_DRAW, GL_STATIC_READ, GL_STATIC_COPY,
+                    GL_DYNAMIC_DRAW, GL_DYNAMIC_READ, or GL_DYNAMIC_COPY*/
+} buflistItem;
+
+unsigned int live_buffers(0);
+size_t       bufferlist_size(0);
+buflistItem  *bufferlist(NULL);
+
+extern "C" void storenewbuffers(const GLsizei n, const GLuint * buffers)
+{
+    if (bufferlist_size <= live_buffers+n)
+    {
+        void* newbufferlist = realloc((void*)bufferlist,
+                                    (bufferlist_size+growsize)
+                                    *sizeof(buflistItem));
+        if (!newbufferlist) {
+            os::log("apitrace: warning: realloc at storenewbuffer failed\n");
+            return;
+        }
+        bufferlist = (buflistItem*)newbufferlist;
+        bufferlist_size += growsize;
+    }
+
+    for (unsigned c = 0, c2; c < n; c++) {
+        for (c2 = 0; c2 < live_buffers; c2++) {
+            if (bufferlist[c2].buffer == buffers[c]) {
+                break;
+            }
+        }
+        if (bufferlist[c2].buffer != buffers[c] && buffers[c] != 0) {
+            bufferlist[live_buffers].buffer = buffers[c];
+            bufferlist[live_buffers].already_saved = false;
+            live_buffers++;
+        }
+    }
+}
+
+extern "C" void storebufferdatasize(GLenum target, GLsizeiptr size,
+                                    GLenum usage)
+{
+    GLint  rVal;
+    GLenum binding(0);
+
+    /*
+     * Find out which buffer is receiving data
+     */
+    for (unsigned c = 0; c < sizeof(bufferObjects)/sizeof(bufferObjects[0]);
+         c++) {
+        if (bufferObjects[c].targetType == target) {
+            binding = bufferObjects[c].targetBinding;
+            break;
+        }
+    }
+
+    if(binding != 0) {
+        _glGetIntegerv(binding, &rVal);
+        if (_glGetError() == GL_NO_ERROR && rVal != 0)
+        {
+            for (unsigned c = 0; c < live_buffers; c++) {
+                if(bufferlist[c].buffer == rVal) {
+                    bufferlist[c].buffer_size = size;
+                    bufferlist[c].usage = usage;
+                    return;
+                }
+            }
+        }
+    }
+    os::log("apitrace: warning: storebufferdatasize failed to find buffer\n");
+}
+
+extern "C" void removebuffer(const GLsizei n, const GLuint * buffer)
+{
+    for (unsigned c = 0; c < n; c++) {
+        unsigned c2, s;
+
+        for (c2 = 0, s = 0; c2+s < live_buffers; c2++) {
+
+            /*
+             * found buffer to be taken out?
+             */
+            if (bufferlist[c2].buffer == buffer[c])
+                s++;
+
+            if (s > 0) {
+               memcpy((void*)(&bufferlist[c2]), (void*)(&bufferlist[c2+s]),
+                               sizeof(buflistItem));
+            }
+        }
+        live_buffers -= s;
+    }
+}
+
+void fakeglGenBuffers(GLsizei n, GLuint * buffer) {
+    unsigned _call = trace::localWriter.beginEnter(&_glGenBuffers_sig);
+    trace::localWriter.beginArg(0);
+    trace::localWriter.writeSInt(n);
+    trace::localWriter.endArg();
+    trace::localWriter.endEnter();
+    trace::localWriter.beginLeave(_call);
+    trace::localWriter.beginArg(1);
+    if (buffer) {
+        size_t _cPGLuint2 = n > 0 ? n : 0;
+        trace::localWriter.beginArray(_cPGLuint2);
+        for (size_t _iPGLuint2 = 0; _iPGLuint2 < _cPGLuint2; ++_iPGLuint2) {
+            trace::localWriter.beginElement();
+            trace::localWriter.writeUInt((buffer)[_iPGLuint2]);
+            trace::localWriter.endElement();
+        }
+        trace::localWriter.endArray();
+    }
+    else{
+        trace::localWriter.writeNull();
+    }
+    trace::localWriter.endArg();
+    trace::localWriter.endLeave();
+}
+
+
+
 /*
  * For rebuilding gl state in single frame capture mode.
  */
@@ -1323,6 +1474,68 @@ extern "C" void stateRebuild(void)
     else
         _glActiveTexture(activeTexture);
 
+    /*
+     * buffer objects
+     */
+    GLvoid* bufferData(NULL);
+    int     bufferDataSize(0);
+
+    GLint rBufferBindingTemp(0);
+    _glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &rBufferBindingTemp);
+
+    for (unsigned c = 0; c < live_buffers; c++) {
+        /*
+         * if we're on second round on saving we don't
+         * create the buffer anymore, just write the contents
+         * into it
+         */
+        if (!bufferlist[c].already_saved) {
+            fakeglGenBuffers(1, &bufferlist[c].buffer);
+            bufferlist[c].already_saved = true;
+        }
+        if (bufferDataSize <= bufferlist[c].buffer_size)
+        {
+            void* new_bufferData = realloc((void*)bufferData,
+                                           bufferlist[c].buffer_size);
+            if (!new_bufferData) {
+                os::log("apitrace: warning: realloc at staterebuild failed\n");
+                return;
+            }
+            bufferData = (GLvoid*)new_bufferData;
+            bufferDataSize = bufferlist[c].buffer_size;
+        }
+
+        /*
+         * clear errors away so can use glerror for checking validity
+         */
+        _glGetError();
+        _glBindBuffer(GL_ARRAY_BUFFER, bufferlist[c].buffer);
+        _glGetBufferSubData(GL_ARRAY_BUFFER, 0, bufferlist[c].buffer_size,
+                            bufferData);
+
+        /*
+         * FIXME:
+         * This will cause useless callback to own code.. D'oh!
+         */
+        if (_glGetError() == GL_NO_ERROR) {
+            glBindBuffer(GL_ARRAY_BUFFER, bufferlist[c].buffer);
+            glBufferData(GL_ARRAY_BUFFER, bufferlist[c].buffer_size,
+                              bufferData, bufferlist[c].usage);
+        }
+    }
+    free((void*)bufferData);
+    bufferData = NULL;
+    _glBindBuffer(GL_ARRAY_BUFFER, rBufferBindingTemp);
+
+    for (unsigned c = 0; c < sizeof(bufferObjects)/sizeof(bufferObjects[0]);
+         c++) {
+        GLint rVal;
+
+        _glGetIntegerv(bufferObjects[c].targetBinding, &rVal);
+
+        if (_glGetError() == GL_NO_ERROR && rVal != 0)
+            glBindBuffer(bufferObjects[c].targetType, rVal);
+    }
 
     /*
      * programs, shaders, uniforms.

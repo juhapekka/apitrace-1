@@ -299,6 +299,9 @@ class GlTracer(Tracer):
                print 'extern \"C\" void storenewprogram(const GLuint program);'
                print 'extern \"C\" void removeprogram(const GLuint program);'
                print 'extern \"C\" void storeboundattrib(const GLuint program, GLuint index, const GLchar * name);'
+               print 'extern \"C\" void storenewbuffers(const GLsizei n, const GLuint * buffers);'
+               print 'extern \"C\" void storebufferdatasize(GLenum target, GLsizeiptr size, GLenum usage);'
+               print 'extern \"C\" void removebuffer(const GLsizei n, const GLuint * buffer);'
 
             Tracer.traceApi(self, api)
             
@@ -780,6 +783,17 @@ class GlTracer(Tracer):
 
         if function.name == 'glBindAttribLocation' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
             print '    storeboundattrib(program, index, name);'
+
+        if function.name == 'glGenBuffers' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+            print '    storenewbuffers(n, buffer);'
+        if function.name == 'glGenBuffersARB' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+            print '    storenewbuffers(n, buffers);'
+
+        if (function.name == 'glBufferData' or function.name == 'glBufferDataARB') and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+            print '    storebufferdatasize(target, size, usage);'
+
+        if function.name == 'glDeleteBuffers' and self.getProcAddressFunctionNames[0] == "glXGetProcAddress":
+            print '    removebuffer(n, buffer);'
 
 
     # These entrypoints are only expected to be implemented by tools;
