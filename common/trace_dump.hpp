@@ -37,7 +37,6 @@
 
 namespace trace {
 
-
 typedef unsigned DumpFlags;
 
 enum {
@@ -45,15 +44,16 @@ enum {
     DUMP_FLAG_NO_ARG_NAMES             = (1 << 1),
     DUMP_FLAG_NO_CALL_NO               = (1 << 2),
     DUMP_FLAG_THREAD_IDS               = (1 << 3),
+    DUMP_FLAG_C_SOURCE                 = (1 << 4),
 };
 
 
-void dump(Value *value, std::ostream &os, DumpFlags flags = 0);
+void dump(Value *value, std::ostream &os, std::ostream &os2, std::ostream &os3, DumpFlags flags = 0);
 
 
 inline std::ostream &
 operator << (std::ostream &os, Value & value) {
-    dump(& value, os);
+    dump(& value, os, os, os);
     return os;
 }
 
@@ -62,11 +62,11 @@ std::ostream &
 operator << (std::ostream &os, Value *value);
 
 
-void dump(Call &call, std::ostream &os, DumpFlags flags = 0);
+void dump(Call &call, std::ostream &os, std::ostream &os2, std::ostream &os3, DumpFlags flags = 0);
 
 
 inline std::ostream & operator <<(std::ostream &os, Call &call) {
-    dump(call, os);
+    dump(call, os, os, os);
     return os;
 }
 

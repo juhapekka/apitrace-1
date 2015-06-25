@@ -33,6 +33,7 @@
 #include <list>
 #include <map>
 #include <ostream>
+#include <fstream>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -107,6 +108,14 @@ public:
  * Output verbosity when retracing files.
  */
 extern int verbosity;
+
+/**
+ * C source code writer related specialities
+ */
+extern std::ofstream c_file;
+extern std::ofstream c_file_tables;
+extern std::ofstream c_file_includes;
+extern char          c_source_folder[];
 
 /**
  * Debugging checks.
@@ -256,4 +265,136 @@ cleanUp(void);
 
 
 } /* namespace retrace */
+
+#define egl_stub_main_source "#include <stdio.h>\n" \
+    "#include <stdlib.h>\n" \
+    "#include \"includes.h\"\n" \
+    "\n" \
+    "unsigned int imgwidth = 1912;\n" \
+    "unsigned int imgheight = 720;\n" \
+    "\n" \
+    "Display               *dpy;\n" \
+    "EGLDisplay            egl_display;\n" \
+    "EGLContext            egl_context;\n" \
+    "EGLSurface            egl_surface;\n" \
+    "\n" \
+    "\n" \
+    "static void run_trace()\n" \
+    "{\n" \
+    "\tcall_all_frames\n" \
+    "\treturn;\n" \
+    "}\n" \
+    "\n" \
+    "\n" \
+    "static Bool WaitForNotify( Display *dpy, XEvent *event, XPointer arg ) {\n" \
+    "\treturn (event->type == MapNotify) && (event->xmap.window == (Window) arg);\n" \
+    "\t(void)dpy;\n" \
+    "}\n" \
+    "\n" \
+    "int main( int argc, char *argv[] )\n" \
+    "{\n" \
+    "\tWindow               xWin;\n" \
+    "\tXEvent               event;\n" \
+    "\tXSetWindowAttributes swa;\n" \
+    "\tEGLConfig            ecfg;\n" \
+    "\tEGLint               num_config;\n" \
+    "\n" \
+    "\tdpy = XOpenDisplay(NULL);\n" \
+    "\tif (dpy == NULL) {\n" \
+    "\t\tprintf(\"Not able to connect to X server\\n\");\n" \
+    "\t\texit(EXIT_FAILURE);\n" \
+    "\t}\n" \
+    "\n" \
+    "\tswa.event_mask  =  StructureNotifyMask;\n" \
+    "\n" \
+    "\txWin = XCreateWindow(dpy, DefaultRootWindow(dpy), 0, 0, 1912, 720,\n" \
+    "\t\t0, CopyFromParent, InputOutput, CopyFromParent,\n" \
+    "\t\tCWEventMask, &swa);\n" \
+    "\n" \
+    "\tXMapWindow(dpy, xWin);\n" \
+    "\tXIfEvent(dpy, &event, WaitForNotify, (XPointer)xWin);\n" \
+    "\n" \
+    "\tegl_display  =  eglGetDisplay((EGLNativeDisplayType)dpy);\n" \
+    "\tif ( egl_display == EGL_NO_DISPLAY ) {\n" \
+    "\t\tfprintf(stderr, \"Got no EGL display.\\n\");\n" \
+    "\t\texit(EXIT_FAILURE);\n" \
+    "\t}\n" \
+    "\n" \
+    "\tif (!eglInitialize(egl_display, NULL, NULL)) {\n" \
+    "\t\tfprintf(stderr, \"Unable to initialize EGL\\n\");\n" \
+    "\t\texit(EXIT_FAILURE);\n" \
+    "\t}\n" \
+    "\n" \
+    "\teglBindAPI(egl_api_bind0);\n" \
+    "\n" \
+    "\tif (!eglChooseConfig(egl_display, egl_config_params0, &ecfg, 1,\n" \
+    "\t\t&num_config)) {\n" \
+    "\n" \
+    "\t\tfprintf(stderr, \"Failed to choose config (eglError: 0x%x)\\n\",\n" \
+    "\t\t\teglGetError());\n" \
+    "\n" \
+    "\t\texit(EXIT_FAILURE);\n" \
+    "\t}\n" \
+    "\n" \
+    "\tif ( num_config != 1 ) {\n" \
+    "\t\tfprintf(stderr, \"Didn't get just one config, but %d\\n\", num_config);\n" \
+    "\t\texit(EXIT_FAILURE);\n" \
+    "\t}\n" \
+    "\n" \
+    "\tegl_surface = eglCreateWindowSurface(egl_display, ecfg, xWin, NULL);\n" \
+    "\tif ( egl_surface == EGL_NO_SURFACE ) {\n" \
+    "\t\tfprintf(stderr, \"Not able to create EGL surface (eglError: 0x%x)\\n\",\n" \
+    "\t\t\teglGetError());\n" \
+    "\t\texit(EXIT_FAILURE);\n" \
+    "\t}\n" \
+    "\n" \
+    "\tegl_context = eglCreateContext (egl_display, ecfg, EGL_NO_CONTEXT,\n" \
+    "\t\tegl_context_params0);\n" \
+    "\n" \
+    "\tif ( egl_context == EGL_NO_CONTEXT ) {\n" \
+    "\t\tfprintf(stderr, \"Not able to create EGL context (eglError: 0x%x)\\n\",\n" \
+    "\t\t\teglGetError());\n" \
+    "\n" \
+    "\t\texit(EXIT_FAILURE);\n" \
+    "\t}\n" \
+    "\n" \
+    "\teglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context);\n" \
+    "\n" \
+    "\t/*\n" \
+    "\t* Setup done. Now go to the trace.\n" \
+    "\t*/\n" \
+    "\trun_trace();\n" \
+    "\n" \
+    "\teglDestroyContext(egl_display, egl_context);\n" \
+    "\teglDestroySurface(egl_display, egl_surface);\n" \
+    "\teglTerminate(egl_display);\n" \
+    "\tXDestroyWindow(dpy, xWin);\n" \
+    "\tXCloseDisplay(dpy);\n" \
+    "\texit(EXIT_SUCCESS);\n" \
+    "\n" \
+    "\t(void)argc;\n" \
+    "\t(void)argv;\n" \
+    "}\n" \
+    "\n"
+
+#define egl_makefile "CC = clang -w -ansi -O0 --std=c99\n" \
+    "\n" \
+    "CFLAGS=$(shell pkg-config --cflags egl glesv2 x11)\n" \
+    "LIBS=$(shell pkg-config --libs egl glesv2 x11)\n" \
+    "\n" \
+    "SRCS=$(wildcard *.c)\n" \
+    "OBJS=$(SRCS:.c=.o)\n" \
+    "\n" \
+    "%.o : %.c\n" \
+    "\t$(CC) -c $(CFLAGS) $< -o $@\n" \
+    "\n" \
+    "egltest: $(OBJS)\n" \
+    "\t$(CC) -o $@ $^ $(LIBS)\n" \
+    "\n" \
+    "clean:\n" \
+    "\t@echo Cleaning up...\n" \
+    "\t@rm egltest\n" \
+    "\t@rm *.o\n" \
+    "\t@echo Done.\n" \
+
 

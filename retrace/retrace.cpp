@@ -39,14 +39,21 @@ namespace retrace {
 
 
 trace::DumpFlags dumpFlags = trace::DUMP_FLAG_THREAD_IDS;
-
+std::ofstream c_file;
+std::ofstream c_file_tables;
+std::ofstream c_file_includes;
 
 static bool call_dumped = false;
 
 
 static void dumpCall(trace::Call &call) {
     if (verbosity >= 0 && !call_dumped) {
-        trace::dump(call, std::cout, dumpFlags);
+        if(dumpFlags & trace::DUMP_FLAG_C_SOURCE) {
+            trace::dump(call, c_file, c_file_tables, c_file_includes, dumpFlags);
+        }
+        else {
+            trace::dump(call, std::cout, std::cout, std::cout, dumpFlags);
+        }
         std::cout.flush();
         call_dumped = true;
     }
@@ -119,9 +126,9 @@ void Retracer::addCallbacks(const Entry *entries) {
     }
 }
 
-
 void Retracer::retrace(trace::Call &call) {
     call_dumped = false;
+    bool dumpthis = true;
 
     Callback callback = 0;
 
@@ -146,7 +153,103 @@ void Retracer::retrace(trace::Call &call) {
     assert(callback);
     assert(callbacks[id] == callback);
 
-    if (verbosity >= 1) {
+    if (dumpFlags&trace::DUMP_FLAG_C_SOURCE) {
+        static int headerswritten = 0;
+
+        if (strncmp(call.name(), "egl", 3) == 0) {
+            if (headerswritten == 0) {
+                std::ofstream tempstream;
+                char newname[1024];
+                sprintf((char*)&newname, "%s/testmain.c",
+                        retrace::c_source_folder);
+
+                tempstream.open(newname);
+                tempstream << egl_stub_main_source;
+                tempstream.close();
+
+                sprintf((char*)&newname, "%s/Makefile",
+                        retrace::c_source_folder);
+                tempstream.open(newname);
+                tempstream << egl_makefile;
+                tempstream.close();
+
+                retrace::c_file_includes << "#include <GLES3/gl3.h>\n"
+                                         << "#include <GLES3/gl3ext.h>\n"
+                                         << "#include <EGL/egl.h>\n"
+                                         << "#include <EGL/eglext.h>\n\n"
+                                         << "extern EGLDisplay egl_display;\n"
+                                         << "extern EGLContext egl_context;\n"
+                                         << "extern EGLSurface egl_surface;\n\n"
+                                         << "void frame_0();\n";
+                headerswritten++;
+            }
+
+            if (strcmp(call.name(), "eglChooseConfig") == 0) {
+                static int confnumber = 0;
+                trace::Array *attrib_array = call.arg(1).toArray();
+                retrace::c_file_includes << "extern int egl_config_params"<< std::dec
+                                         << confnumber << "[];\n";
+                retrace::c_file_tables << "int egl_config_params"<< std::dec
+                                       << confnumber << "[] = { ";
+
+                for (int c = 0; c < attrib_array->values.size(); c++) {
+                    int param = attrib_array->values[c]->toSInt();
+                    retrace::c_file_tables << std::dec << param << ", ";
+                }
+                retrace::c_file_tables << "0 };\n";
+                confnumber++;
+            }
+            if (strcmp(call.name(), "eglBindAPI") == 0) {
+                static int apinumber = 0;
+
+                retrace::c_file_includes << "extern int egl_api_bind"<< std::dec
+                                         << apinumber << ";\n";
+                retrace::c_file_tables << "int egl_api_bind"<< std::dec
+                                       << apinumber << " = 0x" << std::hex
+                                       << call.arg(0).toUInt() << ";\n";
+                apinumber++;
+            }
+
+            if (strcmp(call.name(), "eglCreateContext") == 0) {
+                static int contextnumber = 0;
+                trace::Array *attrib_array = call.arg(3).toArray();
+                retrace::c_file_includes << "extern int egl_context_params"<< std::dec
+                                         << contextnumber << "[];\n";
+                retrace::c_file_tables << "int egl_context_params"<< std::dec
+                                       << contextnumber << "[] = { ";
+
+                for (int c = 0; c < attrib_array->values.size(); c++) {
+                    int param = attrib_array->values[c]->toSInt();
+                    retrace::c_file_tables << std::dec << param << ", ";
+                }
+                retrace::c_file_tables << "0 };\n";
+                contextnumber++;
+            }
+
+            dumpthis = false;
+
+            if (strcmp(call.name(), "eglSwapBuffers") == 0) {
+                dumpthis = true;
+            }
+        }
+
+        if (strncmp(call.name(), "glX", 3) == 0) {
+            if (headerswritten == 0) {
+                retrace::c_file_includes << "#include <GL/gl.h>\n"
+                                         << "#include <GL/glx.h>\n"
+                                         << "#include <GL/glu.h>\n"
+                                         << "#include <GL/glext.h>\n\n"
+                                         << "extern EGLDisplay egl_display;\n"
+                                         << "extern EGLContext egl_context;\n"
+                                         << "extern EGLSurface egl_surface;\n\n"
+                                         << "void frame_0();\n";
+                headerswritten++;
+            }
+        }
+    }
+
+
+    if (verbosity >= 1 && dumpthis) {
         if (verbosity >= 2 ||
             (!(call.flags & trace::CALL_FLAG_VERBOSE) &&
              callback != &ignore)) {

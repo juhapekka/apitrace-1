@@ -282,6 +282,7 @@ static void retrace_eglSwapBuffers(trace::Call &call) {
     }
 }
 
+
 const retrace::Entry glretrace::egl_callbacks[] = {
     {"eglGetError", &retrace::ignore},
     {"eglGetDisplay", &retrace::ignore},
