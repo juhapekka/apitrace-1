@@ -25,9 +25,14 @@
 
 
 #include <limits>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <GL/gl.h>
 
 #include <assert.h>
 #include <string.h>
+#include <math.h>
 
 #include "highlight.hpp"
 #include "trace_dump.hpp"
@@ -36,11 +41,34 @@
 
 namespace trace {
 
+char* blobnamebuffer = NULL;
+char  blobname[512];
+int blobnamebuffersize = 0;
+const char* currentargname = NULL;
+bool write_to_inlcude = false;
+int stringcounter = 0;
+unsigned int last_uint_val = 0;
+const char *sep = "";
+const char* sig = NULL;
+
+
+int* buffers_enabled = NULL;
+int* arrays_enabled = NULL;
+int* textures_enabled = NULL;
+int* framebuffers_enabled = NULL;
+int* renderbuffers_enabled = NULL;
+int* ids_enabled = NULL;
+int* samplers_enabled = NULL;
+int* programs_enabled = NULL;
+
+char write_folder[1024];
 
 class Dumper : public Visitor
 {
 protected:
     std::ostream &os;
+    std::ostream &os_c_course_tables;
+    std::ostream &os_c_include;
     DumpFlags dumpFlags;
     const highlight::Highlighter & highlighter;
     const highlight::Attribute & normal;
@@ -52,8 +80,10 @@ protected:
     const highlight::Attribute & literal;
 
 public:
-    Dumper(std::ostream &_os, DumpFlags _flags) : 
+/*
+    Dumper(std::ostream &_os, DumpFlags _flags) :
         os(_os),
+        os_c_course_include(NULL),
         dumpFlags(_flags),
         highlighter(highlight::defaultHighlighter(!(dumpFlags & DUMP_FLAG_NO_COLOR))),
         normal(highlighter.normal()),
@@ -65,88 +95,396 @@ public:
         literal(highlighter.color(highlight::BLUE))
     {
     }
+*/
+    Dumper(std::ostream &_os, std::ostream &_os2, std::ostream &_os3, DumpFlags _flags) :
+        os(_os),
+        os_c_course_tables(_os2),
+        os_c_include(_os3),
+        dumpFlags(_flags),
+        highlighter(highlight::defaultHighlighter(!(dumpFlags & DUMP_FLAG_NO_COLOR))),
+        normal(highlighter.normal()),
+        bold(highlighter.bold()),
+        italic(highlighter.italic()),
+        strike(highlighter.strike()),
+        red(highlighter.color(highlight::RED)),
+        pointer(highlighter.color(highlight::GREEN)),
+        literal(highlighter.color(highlight::BLUE))
+    {
+        sep = ", ";
+    }
+
 
     ~Dumper() {
     }
 
     void visit(Null *) {
-        os << literal << "NULL" << normal;
+        if (strlen(sep)<1)
+        {
+            os << ((dumpFlags&trace::DUMP_FLAG_C_SOURCE)?"(int[]) {":"{");
+        }
+        if (dumpFlags&trace::DUMP_FLAG_C_SOURCE)
+            os << "NULL";
+        else
+            os << literal << "NULL" << normal;
     }
 
     void visit(Bool *node) {
-        os << literal << (node->value ? "true" : "false") << normal;
+        if (strlen(sep)<1)
+        {
+            os << ((dumpFlags&trace::DUMP_FLAG_C_SOURCE)?"(bool[]) {":"{");
+        }
+        if (dumpFlags&trace::DUMP_FLAG_C_SOURCE)
+            os << literal << (node->value ? "true" : "false");
+        else
+            os << (node->value ? "true" : "false");
     }
 
     void visit(SInt *node) {
-        os << literal << node->value << normal;
+        if (strlen(sep)<1)
+        {
+            os << ((dumpFlags&trace::DUMP_FLAG_C_SOURCE)?"(int[]) {":"{");
+        }
+        if (dumpFlags&trace::DUMP_FLAG_C_SOURCE)
+            if (write_to_inlcude) {
+                ;
+//                os_c_course_tables << std::dec << node->value << ";\n";
+//                os_c_include << std::dec << node->value << ";\n";
+            }
+            else {
+                if(strcmp(currentargname, "drawable")==0) {
+                    os << "xWin";
+                    return;
+                }
+                os << std::dec << node->value;
+            }
+        else
+            os << literal << node->value << normal;
     }
 
     void visit(UInt *node) {
-        os << literal << node->value << normal;
+        if (strlen(sep)<1)
+        {
+            os << ((dumpFlags&trace::DUMP_FLAG_C_SOURCE)?"(unsigned int[]) {":"{");
+        }
+        if (dumpFlags&trace::DUMP_FLAG_C_SOURCE) {
+           const struct
+           {
+              char   name[16];
+              int    namelenght;
+              int** list;
+           } handled_resources_pointer[] =
+           {
+              {"buffer", 6, &buffers_enabled },
+              {"texture", 7, &textures_enabled },
+              {"array", 5, &arrays_enabled },
+              {"framebuffer", 11, &framebuffers_enabled },
+              {"renderbuffer", 13, &renderbuffers_enabled },
+              {"id", 2, &ids_enabled },
+              {"sampler", 7, &samplers_enabled },
+              {"program", 7, &programs_enabled },
+           };
+
+           const struct
+           {
+              char   name[16];
+              char   outputname[16];
+           } handled_resources[] =
+           {
+              {"program", "_programs" },
+              {"shader", "shader" },
+           };
+
+
+           if (strncmp("glGen", sig, 5)== 0 || 
+               strncmp("glDelete", sig, 8)== 0) {
+              last_uint_val = node->value;
+
+              for (int c = 0; c < sizeof(handled_resources_pointer)/sizeof(handled_resources_pointer[0]); c++) {
+
+                 if(strncmp(currentargname, handled_resources_pointer[c].name, handled_resources_pointer[c].namelenght) == 0) {
+
+                    for (int i = 0; i < (*handled_resources_pointer[c].list)[0]; i++) {
+                       if ((*handled_resources_pointer[c].list)[i+1] == last_uint_val )
+                          goto already_stored_this;
+                    }
+
+                    os_c_course_tables << "unsigned int _" << handled_resources_pointer[c].name 
+                                        << "s" << "_" << std::dec << last_uint_val
+                                        << " = "  << last_uint_val << ";\n";
+
+                    os_c_course_tables << "unsigned int* _" << handled_resources_pointer[c].name 
+                                        << "s" << "_" << std::dec << last_uint_val 
+                                        << "_p = &_" << handled_resources_pointer[c].name  
+                                        << "s" << "_"
+                                        << std::dec << last_uint_val << ";\n";
+
+                    os_c_include << "extern unsigned int _" << handled_resources_pointer[c].name 
+                                  << "s" << "_" << std::dec << last_uint_val<< ";\n";
+
+                    os_c_include << "extern unsigned int* _" << handled_resources_pointer[c].name
+                                  << "s" << "_" << std::dec << last_uint_val << "_p;\n";
+
+                    (*handled_resources_pointer[c].list)[0]++;
+                    (*handled_resources_pointer[c].list)[(*handled_resources_pointer[c].list)[0]] = last_uint_val;
+already_stored_this:;
+                 }
+              }
+           }
+           else
+              last_uint_val = node->value;
+
+            if (write_to_inlcude) {
+//                os_c_course_tables << std::dec << node->value << ";\n";
+//                os_c_include << std::dec << node->value << ";\n";
+            }
+            else {
+               for (int c = 0; c < 2; c++) {
+                  
+                  if(strcmp(currentargname, handled_resources[c].name) == 0) {
+                     os << handled_resources[c].outputname << "_"  << std::dec
+                        << node->value;
+                     return;
+                  }
+               }
+
+               for (int c = 0; c < sizeof(handled_resources_pointer)/sizeof(handled_resources_pointer[0]); c++) {
+                  if(strncmp(currentargname, handled_resources_pointer[c].name, handled_resources_pointer[c].namelenght) == 0) {
+                     os << "*_" << handled_resources_pointer[c].name << "s" << "_"  
+                        << std::dec << node->value << "_p";
+
+                     if (strncmp("glBind", sig, 6)== 0) {
+
+                        int *list = *handled_resources_pointer[c].list;
+                        int comp = list[0]/*+1*/;
+                        for (int i = 0; i < comp; i++) {
+                           int cc = (*handled_resources_pointer[c].list)[i+1];
+                           if (cc == last_uint_val ) {
+                              goto already_stored_this2;
+                           }
+                        }
+
+                        os_c_course_tables << "unsigned int _" << handled_resources_pointer[c].name 
+                                            << "s" << "_" << std::dec << last_uint_val
+                                            << " = "  << last_uint_val << ";\n";
+
+                        os_c_course_tables << "unsigned int* _" << handled_resources_pointer[c].name 
+                                            << "s" << "_" << std::dec << last_uint_val
+                                            << "_p = &_" << handled_resources_pointer[c].name  
+                                            << "s" << "_"
+                                            << std::dec << last_uint_val << ";\n";
+
+                        os_c_include << "extern unsigned int _" << handled_resources_pointer[c].name 
+                                      << "s" << "_" << std::dec << last_uint_val << ";\n";
+
+                        os_c_include << "extern unsigned int* _" << handled_resources_pointer[c].name
+                                      << "s" << "_" << std::dec << last_uint_val << "_p;\n";
+                     }
+
+                     (*handled_resources_pointer[c].list)[(*handled_resources_pointer[c].list)[0]+1] = last_uint_val;
+                     (*handled_resources_pointer[c].list)[0]++;
+already_stored_this2:
+                     return;
+                  }
+               }
+
+               if(strcmp(currentargname, "drawable")==0) {
+                    os << "xWin";
+                    return;
+                }
+                os << std::dec << node->value;
+            }
+        }
+        else
+            os << literal << node->value << normal;
     }
 
     void visit(Float *node) {
+        if (strlen(sep)<1)
+        {
+            os << ((dumpFlags&trace::DUMP_FLAG_C_SOURCE)?"(float[]) {":"{");
+        }
         std::streamsize oldPrecision = os.precision(std::numeric_limits<float>::digits10 + 1);
-        os << literal << node->value << normal;
+        if (dumpFlags&trace::DUMP_FLAG_C_SOURCE)
+            if (isfinite(node->value)) {
+               os << node->value;
+            }
+        else
+            {
+               if(node->value == -INFINITY)
+                  os << "-INFINITY";
+               else
+                  os << "INFINITY";
+            }
+        else
+            os << literal << node->value << normal;
         os.precision(oldPrecision);
     }
 
     void visit(Double *node) {
+        if (strlen(sep)<1)
+        {
+            os << ((dumpFlags&trace::DUMP_FLAG_C_SOURCE)?"(double[]) {":"{");
+        }
         std::streamsize oldPrecision = os.precision(std::numeric_limits<double>::digits10 + 1);
-        os << literal << node->value << normal;
+        if (dumpFlags&trace::DUMP_FLAG_C_SOURCE)
+            os << node->value;
+        else
+            os << literal << node->value << normal;
         os.precision(oldPrecision);
     }
 
     template< typename C >
     void visitString(const C *value) {
-        os << literal << "\"";
+        std::ostream &redirect((dumpFlags&trace::DUMP_FLAG_C_SOURCE&&
+                                (strcmp(currentargname, "string")==0 ||
+                                 strcmp(currentargname, "varyings") == 0))?
+                                  os_c_course_tables:os);
+
+        if (dumpFlags&trace::DUMP_FLAG_C_SOURCE) {
+            redirect <<"\"";
+        }
+        else {
+            redirect << literal << "\"";
+        }
+
         for (const C *it = value; *it; ++it) {
             unsigned c = (unsigned) *it;
             if (c == '\"')
-                os << "\\\"";
+                redirect << "\\\"";
             else if (c == '\\')
-                os << "\\\\";
+                redirect << "\\\\";
             else if (c >= 0x20 && c <= 0x7e)
-                os << (char)c;
+                redirect << (char)c;
             else if (c == '\t') {
-                os << "\t";
+                redirect << "\t";
             } else if (c == '\r') {
                 // Ignore carriage-return
             } else if (c == '\n') {
                 // Reset formatting so that it looks correct with 'less -R'
-                os << normal << '\n' << literal;
+                if (dumpFlags&trace::DUMP_FLAG_C_SOURCE) {
+                    if (it[1] == 0)
+                        redirect << "\\n \\\n";
+                    else
+                        redirect << "\\n\\\n";
+                }
+                else
+                    redirect << normal << '\n' << literal;
             } else {
                 // FIXME: handle wchar_t octals properly
                 unsigned octal0 = c & 0x7;
                 unsigned octal1 = (c >> 3) & 0x7;
                 unsigned octal2 = (c >> 3) & 0x7;
-                os << "\\";
+                redirect << "\\";
                 if (octal2)
-                    os << octal2;
+                    redirect << octal2;
                 if (octal1)
-                    os << octal1;
-                os << octal0;
+                    redirect << octal1;
+                redirect << octal0;
             }
         }
-        os << "\"" << normal;
+        if (dumpFlags&DUMP_FLAG_C_SOURCE) {
+//            if (strcmp(currentargname, "string")!=0) {
+               redirect << "\"";
+//            }
+        }
+        else {
+            redirect << "\"" << normal;
+        }
     }
 
     void visit(String *node) {
+        if (dumpFlags&DUMP_FLAG_C_SOURCE && sig &&
+            (strncmp(sig, "glShaderSource", 14) == 0||
+             strncmp(sig, "glTransformFeedbackVaryings", 27) == 0 ||
+             strncmp(sig, "glProgramStringARB", 18) == 0)) {
+            static int storenum = 0, increased = 0;
+
+            if (storenum != trace::stringcounter) {
+               storenum = trace::stringcounter;
+               increased = 0;
+            }
+
+            std::ofstream tempstream;
+            char newname[1024];
+            sprintf((char*)&newname, "%s/_%s_%d_%d", write_folder, currentargname,
+                    trace::stringcounter, increased);
+
+            tempstream.open(newname);
+            tempstream.write(node->toString(), strlen(node->toString()));
+            tempstream.close();
+///////////
+            sprintf((char*)&newname, "_%s_%d_%d", currentargname,
+                    trace::stringcounter, increased);
+
+            char* bb = blobnamebuffer;
+
+            for (unsigned i = 0 ; i < blobnamebuffersize;
+                 i++, bb += strlen(bb)+1) {
+            }
+
+            blobnamebuffer = (char*)realloc( blobnamebuffer,(bb-blobnamebuffer)+
+                                     strlen((char*)&newname)+1);
+
+            bb = blobnamebuffer;
+            for (unsigned i = 0 ; i < blobnamebuffersize;
+                 i++, bb += strlen(bb)+1) {
+            }
+            memcpy(bb, (void*)&newname, strlen((char*)&newname)+1);
+            blobnamebuffersize++;
+///////////////////
+            
+            if (strncmp(sig, "glProgramStringARB", 18) == 0) {
+               sprintf((char*)&newname, "_%s_%d_p[%d]", currentargname,
+                       trace::stringcounter, increased);
+               os << newname;
+            }
+
+            increased++;
+            return;
+        }
         visitString(node->value);
     }
 
     void visit(WString *node) {
-        os << literal << "L";
+        if (dumpFlags&DUMP_FLAG_C_SOURCE)
+            os << "L";
+        else
+            os << literal << "L";
         visitString(node->value);
     }
 
     void visit(Enum *node) {
+        if (strlen(sep)<1)
+        {
+            os << ((dumpFlags&trace::DUMP_FLAG_C_SOURCE)?"(const GLenum[]) {":"{");
+        }
         const EnumValue *it = node->lookup();
         if (it) {
-            os << literal << it->name << normal;
+            if (dumpFlags&DUMP_FLAG_C_SOURCE) {
+/*                if (write_to_inlcude) {
+                   ;
+//                    os_c_course_tables << " = " << it->name;
+                }
+                else {*/
+                    os << it->name;
+/*                }*/
+            }
+            else {
+                os << literal << it->name << normal;
+            }
             return;
         }
-        os << literal << node->value << normal;
+        if (dumpFlags&DUMP_FLAG_C_SOURCE) {
+            if (write_to_inlcude) {
+                os_c_course_tables << " = " << node->value;
+            }
+            else {
+                os << node->value;
+            }
+        }
+        else {
+            os << literal << node->value << normal;
+        }
     }
 
     void visit(Bitmask *bitmask) {
@@ -160,7 +498,10 @@ public:
                 if (!first) {
                     os << " | ";
                 }
-                os << literal << it->name << normal;
+                if (dumpFlags&DUMP_FLAG_C_SOURCE)
+                    os << it->name;
+                else
+                    os << literal << it->name << normal;
                 value &= ~it->value;
                 first = false;
             }
@@ -172,7 +513,10 @@ public:
             if (!first) {
                 os << " | ";
             }
-            os << literal << "0x" << std::hex << value << std::dec << normal;
+            if (dumpFlags&DUMP_FLAG_C_SOURCE)
+                os << "0x" << std::hex << value << std::dec;
+            else
+                os << literal << "0x" << std::hex << value << std::dec << normal;
         }
     }
 
@@ -192,7 +536,11 @@ public:
                 }
             }
 
-            os << sep << italic << memberName << normal << " = ",
+            if (!dumpFlags&trace::DUMP_FLAG_NO_ARG_NAMES) {
+                os << sep << memberName << " = ";
+            }
+            else
+                os << sep << italic << memberName << normal << " = ";
             _visit(memberValue);
             sep = ", ";
         }
@@ -225,28 +573,237 @@ public:
     }
 
     void visit(Array *array) {
+        unsigned char names[256];
+
         if (array->values.size() == 1) {
-            os << "&";
-            _visit(array->values[0]);
+            if (dumpFlags&DUMP_FLAG_C_SOURCE) {
+                sprintf( (char*)&names, "_%s_", currentargname);
+                if ((strcmp(currentargname, "string")==0 ||
+                     strcmp(currentargname, "varyings") == 0)) {
+                    os << names << std::dec << stringcounter << "_p";
+
+                    os_c_include << "extern char** "
+                                        << names << std::dec << stringcounter
+                                        << "_p;\n";
+
+                    write_to_inlcude = true;
+                    _visit(array->values[0]);
+                    write_to_inlcude = false;
+
+                }
+                else {
+                   if (strncmp(sig, "glShaderSource", 14)==0 ) 
+                   {
+                      /*
+                       * if need to cludge for now.. :/
+                       */
+                      os << "NULL";
+                   }
+                   else
+                   {
+/*                      if (array->values[0])
+*/
+                       write_to_inlcude = true;
+                       _visit(array->values[0]);
+                       write_to_inlcude = false;
+   
+                       os << "_" <<currentargname << ((strcmp(currentargname, "buffer")==0)?"s_":"_") <<
+                             std::dec << last_uint_val << "_p";
+
+/*                    if (strncmp("glGen", sig, 5)== 0 ) {
+                       os_c_course_tables << "unsigned int " << names << std::dec << last_uint_val+1 << " = " << last_uint_val+1 << ";\n";
+                       
+                       os_c_course_tables << "unsigned int* " << names << std::dec << last_uint_val+1 << "_p = &" << names << std::dec << last_uint_val+1 << ";\n";
+                       os_c_include << "extern unsigned int " << names << std::dec << last_uint_val+ 1<< ";\n";
+                       os_c_include << "extern unsigned int* " << names << std::dec << last_uint_val+1 << "_p;\n";
+                    }*/
+                   }
+
+                }
+
+                if ((strcmp(currentargname, "string")==0 ||
+                     strcmp(currentargname, "varyings") == 0)) {
+                    os_c_course_tables << "char** " << names << \
+                                           std::dec << stringcounter << \
+                                           "_p;\n";
+                }
+                stringcounter++;
+                currentargname = (const char*)NULL;
+            }
+            else {
+                os << "&";
+                _visit(array->values[0]);
+            }
         }
         else {
-            const char *sep = "";
-            os << "{";
-            for (std::vector<Value *>::iterator it = array->values.begin(); it != array->values.end(); ++it) {
-                os << sep;
-                _visit(*it);
-                sep = ", ";
+            if (dumpFlags&DUMP_FLAG_C_SOURCE) {
+                sprintf( (char*)&names, "_%s_", currentargname);
+                if (strcmp(currentargname, "string")==0 || 
+                    strcmp(currentargname, "varyings")==0) {
+                    os << /*"&" << */names << std::dec << stringcounter << "_p";
+
+/*                    os_c_course_tables << "unsigned char "
+                                        << names << std::dec << stringcounter
+                                        << "[][131072] = {";*/
+                    os_c_course_tables << "char** "
+                                       << names << std::dec << stringcounter
+                                       << "_p;\n";
+
+
+                    os_c_include << "extern char** "
+                                        << names << std::dec << stringcounter
+                                        << "_p;\n";
+/*                    os_c_include << "extern unsigned char "
+                                        << names << std::dec << stringcounter
+                                        << "[][131072];\n";*/
+
+                    write_to_inlcude = true;
+                    sep = "";
+                    for (std::vector<Value *>::iterator it = array->values.begin(); it != array->values.end(); ++it) {
+/*                        os_c_course_tables << sep;
+                        os_c_course_tables << "{"; */
+                        _visit(*it);
+/*                        os_c_course_tables << "}";*/
+                        sep = ", ";
+                    }
+/*                    if (strlen(sep)<1) {
+                        os_c_course_tables << "NULL";
+                    }
+                    else {
+                        os_c_course_tables << "};\n\n";
+                    }*/
+                    write_to_inlcude = false;
+                }
+                else {
+                    sep = "";
+                    for (std::vector<Value *>::iterator it = array->values.begin(); it != array->values.end(); ++it) {
+                        os << sep;
+                        _visit(*it);
+                        sep = ", ";
+                    }
+                    if (strlen(sep)<1) {
+                        os << "NULL";
+                    }
+                    else {
+                        os << "}";
+                    }
+                }
+
+/*                if (strcmp(currentargname, "string")==0) {
+                    os_c_course_tables << "unsigned char* " << names << \
+                                           std::dec << stringcounter << \
+                                           "_p[] = {";
+                    for ( int i = 0; i < array->values.size(); i++) {
+                        os_c_course_tables << "&" << names << std::dec
+                                           << stringcounter << "[" << i
+                                           << "], ";
+                        if ((i&7) == 0)
+                            os_c_course_tables << "\\\n    ";
+                    }
+                    os_c_course_tables << "};\n\n";
+
+                }*/
+                stringcounter++;
+                currentargname = (const char*)NULL;
             }
-            os << "}";
+            else {
+                sep = "";
+                for (std::vector<Value *>::iterator it = array->values.begin(); it != array->values.end(); ++it) {
+                    os << sep;
+                    _visit(*it);
+                    sep = ", ";
+                }
+                if (strlen(sep)<1) {
+                    os << "NULL";
+                }
+                else {
+                    os << "}";
+                }
+            }
         }
     }
 
     void visit(Blob *blob) {
-        os << pointer << "blob(" << blob->size << ")" << normal;
+        if (dumpFlags&DUMP_FLAG_C_SOURCE) {
+            int c, x, *bp = (int*)blob->buf;
+            for (x = c = 0; c < blob->size/4; c++) {
+                x += *bp++;
+            }
+            sprintf( (char*)&blobname, "_blob_%llu_size_%x_%x",
+                     *((unsigned long long*)blob->buf), \
+                     (unsigned int)blob->size, (unsigned int)x);
+
+            os << blobname;
+
+            /*
+             * was this data saved already?
+             */
+            char* bb = blobnamebuffer;
+
+            for (unsigned i = 0 ; i < blobnamebuffersize;
+                 i++, bb += strlen(bb)+1) {
+                if (strcmp((char*)blobname, bb) == 0)
+                {
+                    return;
+                }
+            }
+
+            blobnamebuffer = (char*)realloc( blobnamebuffer,(bb-blobnamebuffer)+
+                                     strlen(blobname)+1);
+
+            bb = blobnamebuffer;
+            for (unsigned i = 0 ; i < blobnamebuffersize;
+                 i++, bb += strlen(bb)+1) {
+            }
+            memcpy(bb, (void*)&blobname, strlen(blobname)+1);
+            blobnamebuffersize++;
+
+            std::ofstream tempstream;
+            char newname[1024];
+            sprintf((char*)&newname, "%s/%s", write_folder, blobname);
+
+            os_c_course_tables << "unsigned char *" << blobname << " = NULL;\n";
+            os_c_include << "extern unsigned char* " << blobname << ";\n";
+
+            tempstream.open(newname);
+            tempstream.write(blob->buf, blob->size);
+            tempstream.close();
+        }
+        else
+            os << pointer << "blob(" << blob->size << ")" << normal;
     }
 
     void visit(Pointer *p) {
-        os << pointer << "0x" << std::hex << p->value << std::dec << normal;
+        if (dumpFlags&trace::DUMP_FLAG_C_SOURCE) {
+            if(strcmp(currentargname, "dpy")==0) {
+                os << "display";
+                return;
+            }
+            if(strcmp(currentargname, "surface")==0) {
+                os << "surface";
+                return;
+            }
+
+            const char handled_resources[][32] =
+            {
+               "dest",
+               "sync",
+               "textures"
+            };
+
+            for (int c = 0; c < 3; c++) {
+               if(strcmp(currentargname, handled_resources[c]) == 0) {
+                  os << handled_resources[c] << "_"  << std::dec
+                     << p->value;
+                  last_uint_val = p->value;
+                  return;
+               }
+            }
+
+            os << "0x" << std::hex << p->value << std::dec;
+        }
+        else
+            os << pointer << "0x" << std::hex << p->value << std::dec << normal;
     }
 
     void visit(Repr *r) {
@@ -266,7 +823,89 @@ public:
 
     void visit(Call *call) {
         CallFlags callFlags = call->flags;
-        
+
+        if (dumpFlags & DUMP_FLAG_C_SOURCE) {
+            os << "    ";
+            sig = call->sig->name;
+
+            enum callerHandling { Defaultcase };
+
+            const struct
+            {
+               callerHandling handler;
+               char           apiCall[32];
+               int            apiCallNameLen;
+               char           resName[32];
+               char           resType[16];
+            } handled_resources[] =
+            {
+               {Defaultcase, "glCreateProgram", 15, "programs_", "GLuint "},
+               {Defaultcase, "glCreateShader", 14, "shader_", "GLuint "},
+               {Defaultcase, "glMapBuffer", 11, "dest_", "void* "},
+               {Defaultcase, "glMapBufferRange", 16, "dest_", "void* "},
+               {Defaultcase, "glFenceSync", 11, "sync_", "GLsync "}
+            };
+
+            for (int c = 0; c < sizeof(handled_resources)
+                 /sizeof(handled_resources[0]); c++) {
+               if (strncmp(call->name(), handled_resources[c].apiCall, 
+                           handled_resources[c].apiCallNameLen) == 0 ) {
+
+                  switch (handled_resources[c].handler ) {
+
+                  case Defaultcase:
+                  default:
+                     sprintf( (char*)&blobname, "%s%d",
+                              handled_resources[c].resName, \
+                              (unsigned int)call->ret->toUInt());
+                     break;
+                  }
+
+                  /*
+                   * was this data saved already?
+                   */
+                  char* bb = blobnamebuffer;
+
+                  for (unsigned i = 0 ; i < blobnamebuffersize;
+                       i++, bb += strlen(bb)+1) {
+                      if (strcmp((char*)blobname, bb) == 0)
+                      {
+                          goto no_storing;
+                      }
+                  }
+
+                  blobnamebuffer = (char*)realloc( blobnamebuffer,(bb-blobnamebuffer)+
+                                           strlen(blobname)+1);
+
+                  bb = blobnamebuffer;
+                  for (unsigned i = 0 ; i < blobnamebuffersize;
+                       i++, bb += strlen(bb)+1) {
+                  }
+                  memcpy(bb, (void*)&blobname, strlen(blobname)+1);
+                  blobnamebuffersize++;
+
+
+
+no_storing:
+
+                  switch (handled_resources[c].handler ) {
+                  default:
+                     os << handled_resources[c].resName  << std::dec 
+                        << call->ret->toSInt() << " = ";
+                     os_c_course_tables << handled_resources[c].resType
+                                        << handled_resources[c].resName
+                                        << std::dec << call->ret->toUInt() 
+                                        << ";\n";
+                     os_c_include << "extern " << handled_resources[c].resType
+                                  << handled_resources[c].resName << std::dec
+                                  << call->ret->toUInt() << ";\n";
+                     goto leaveloop;
+                  }
+               }
+            }
+leaveloop:;
+        }
+
         if (!(dumpFlags & DUMP_FLAG_NO_CALL_NO)) {
             os << call->no << " ";
         }
@@ -274,20 +913,27 @@ public:
             os << "@" << std::hex << call->thread_id << std::dec << " ";
         }
 
-        if (callFlags & CALL_FLAG_NON_REPRODUCIBLE) {
-            os << strike;
-        } else if (callFlags & (CALL_FLAG_FAKE | CALL_FLAG_NO_SIDE_EFFECTS)) {
-            os << normal;
-        } else {
-            os << bold;
+        if (!dumpFlags & DUMP_FLAG_C_SOURCE) {
+            if (callFlags & CALL_FLAG_NON_REPRODUCIBLE) {
+                os << strike;
+            } else if (callFlags & (CALL_FLAG_FAKE | CALL_FLAG_NO_SIDE_EFFECTS)) {
+                os << normal;
+            } else {
+                os << bold;
+            }
         }
-        os << call->sig->name << normal;
+        if (dumpFlags&DUMP_FLAG_C_SOURCE)
+            os << call->sig->name;
+        else
+            os << call->sig->name << normal;
 
         os << "(";
         const char *sep = "";
         for (unsigned i = 0; i < call->args.size(); ++i) {
             os << sep;
-            if (!(dumpFlags & DUMP_FLAG_NO_ARG_NAMES)) {
+            currentargname = call->sig->arg_names[i];
+            if (!(dumpFlags & DUMP_FLAG_NO_ARG_NAMES
+                  || dumpFlags & DUMP_FLAG_C_SOURCE)) {
                 os << italic << call->sig->arg_names[i] << normal << " = ";
             }
             if (call->args[i].value) {
@@ -297,9 +943,12 @@ public:
             }
             sep = ", ";
         }
-        os << ")";
+        if (dumpFlags&DUMP_FLAG_C_SOURCE)
+            os << ");";
+        else
+            os << ")";
 
-        if (call->ret) {
+        if (call->ret && !dumpFlags&DUMP_FLAG_C_SOURCE) {
             os << " = ";
             _visit(call->ret);
         }
@@ -321,14 +970,19 @@ public:
 };
 
 
-void dump(Value *value, std::ostream &os, DumpFlags flags) {
-    Dumper d(os, flags);
+void dump(Value *value, std::ostream &os, std::ostream &os2, std::ostream &os3, DumpFlags flags) {
+    Dumper d(os, os2, os3, flags);
     value->visit(d);
 }
 
-
-void dump(Call &call, std::ostream &os, DumpFlags flags) {
-    Dumper d(os, flags);
+void dump(Call &call, std::ostream &os, std::ostream &os2, std::ostream &os3,DumpFlags flags) {
+/*
+   if ( strcmp(call.sig->name, "glDrawBuffers") == 0 )
+   {
+      fprintf(stderr, "glDrawBuffers\n");
+   }
+*/
+    Dumper d(os, os2, os3, flags);
     d.visit(&call);
 }
 

@@ -30,6 +30,7 @@
 #include <limits.h> // for CHAR_MAX
 #include <iostream>
 #include <getopt.h>
+#include <sys/stat.h>
 #ifndef _WIN32
 #include <unistd.h> // for isatty()
 #endif
@@ -96,6 +97,8 @@ bool singleThread = false;
 unsigned frameNo = 0;
 unsigned callNo = 0;
 
+char* currentTraceFileName;
+char  c_source_folder[PATH_MAX];
 
 static void
 takeSnapshot(unsigned call_no);
@@ -104,6 +107,23 @@ takeSnapshot(unsigned call_no);
 void
 frameComplete(trace::Call &call) {
     ++frameNo;
+
+    if(dumpFlags&trace::DUMP_FLAG_C_SOURCE) {
+        retrace::c_file << "}";
+        retrace::c_file.flush();
+        retrace::c_file.close();
+
+        char newname[PATH_MAX];
+        sprintf((char*)&newname, "%s/frame_%d.c", c_source_folder, frameNo);
+
+        retrace::c_file.open(newname);
+
+        retrace::c_file << "#include \"includes.h\"\n\n\nvoid frame_"
+                        << frameNo << "(){\n";
+
+        retrace::c_file_includes << "void frame_" << frameNo << "();\n";
+    }
+
 
     if (!(call.flags & trace::CALL_FLAG_END_FRAME) &&
         snapshotFrequency.contains(call)) {
@@ -574,7 +594,6 @@ RelayRace::stopRunners(void) {
     }
 }
 
-
 static void
 mainLoop() {
     addCallbacks(retracer);
@@ -594,9 +613,65 @@ mainLoop() {
         RelayRace race;
         race.run();
     }
+
     finishRendering();
 
     long long endTime = os::getTime();
+
+    if (dumpFlags&trace::DUMP_FLAG_C_SOURCE) {
+
+        c_file_includes << "\n\n#define call_all_frames\\\n";
+
+        for (int c = 0; c < frameNo; c++ ) {
+            c_file_includes << "   frame_" << std::dec << c << "();\\\n";
+        }
+        c_file_includes << "\n\n";
+
+        c_file << "}\n";
+
+        c_file_includes << "\n\n#define load_all_blobs\\\n";
+       char* bb = trace::blobnamebuffer;
+       for (unsigned i = 0 ; i < trace::blobnamebuffersize;
+            i++, bb += strlen(bb)+1) {
+           if (strstr(bb, "blob") != NULL)
+           {
+              c_file_includes << "   " << bb << " = (unsigned char*)LOADER( \"" << bb << "\" );\\\n";
+           }
+           if (strstr(bb, "string") != NULL ||
+               strstr(bb, "varyings") != NULL )
+           {
+              char tempchr[256];
+              memset( (void*)&tempchr, 0, sizeof(tempchr));
+              memcpy((void*)tempchr, bb, strrchr(bb, '_') - bb);
+
+              if (strcmp("_0", (char*)&bb[strlen(bb)-2]) == 0) {
+                 c_file_includes << "   " << tempchr
+                                 << "_p = (char**)malloc( 512*sizeof(void*));\\\n";
+              }
+              int i = atoi(strrchr(bb, '_')+1);
+              c_file_includes << "   " << tempchr << "_p["<< i <<
+                                 "] = LOADER( \"" << bb << "\" );\\\n";
+           }
+       }
+       c_file_includes << "\n\n";
+
+       c_file_includes << "\n\n#define free_all_blobs\\\n";
+      bb = trace::blobnamebuffer;
+      for (unsigned i = 0 ; i < trace::blobnamebuffersize;
+           i++, bb += strlen(bb)+1) {
+          if (strstr(bb, "blob") != NULL)
+          {
+             c_file_includes << "   free(" << bb << ");\\\n";
+          }
+      }
+      c_file_includes << "\n\n";
+
+       c_file.close();
+       c_file_includes.close();
+       c_file_tables.close();
+    }
+
+
     float timeInterval = (endTime - startTime) * (1.0 / os::timeFrequency);
 
     if ((retrace::verbosity >= -1) || (retrace::profiling)) {
@@ -642,6 +717,7 @@ usage(const char *argv0) {
         "  -S, --snapshot=CALLSET  calls to snapshot (default is every frame)\n"
         "      --snapshot-interval=N    specify a frame interval when generating snaphots (default is 0)\n"
         "  -v, --verbose           increase output verbosity\n"
+        "      --csource           output c source\n"
         "  -D, --dump-state=CALL   dump state at specific call no\n"
         "      --dump-format=FORMAT dump state format (`json` or `ubjson`)\n"
         "  -w, --wait              waitOnFinish on final frame\n"
@@ -696,6 +772,7 @@ longOptions[] = {
     {"snapshot", required_argument, 0, 'S'},
     {"snapshot-interval", required_argument, 0, SNAPSHOT_INTERVAL_OPT},
     {"verbose", no_argument, 0, 'v'},
+    {"csource", no_argument, 0, 'c'},
     {"wait", no_argument, 0, 'w'},
     {"loop", optional_argument, 0, LOOP_OPT},
     {"singlethread", no_argument, 0, SINGLETHREAD_OPT},
@@ -832,6 +909,14 @@ int main(int argc, char **argv)
         case 'v':
             ++retrace::verbosity;
             break;
+        case 'c':
+            ++retrace::verbosity;
+            dumpFlags |= trace::DUMP_FLAG_C_SOURCE;
+            dumpFlags |= trace::DUMP_FLAG_NO_CALL_NO;
+            dumpFlags |= trace::DUMP_FLAG_THREAD_IDS;
+            dumpFlags |= trace::DUMP_FLAG_NO_ARG_NAMES;
+            dumpFlags &= ~trace::DUMP_FLAG_THREAD_IDS;
+            break;
         case 'w':
             waitOnFinish = true;
             break;
@@ -901,8 +986,42 @@ int main(int argc, char **argv)
             return 1;
         }
 
+        if (dumpFlags&trace::DUMP_FLAG_C_SOURCE) {
+            trace::buffers_enabled = (int*) calloc(65536, sizeof(int));
+            trace::arrays_enabled = (int*) calloc(65536, sizeof(int));
+            trace::textures_enabled = (int*) calloc(65536, sizeof(int));
+            trace::framebuffers_enabled = (int*) calloc(65536, sizeof(int));
+            trace::renderbuffers_enabled = (int*) calloc(65536, sizeof(int));
+            trace::ids_enabled = (int*) calloc(65536, sizeof(int));
+            trace::samplers_enabled = (int*) calloc(65536, sizeof(int));
+            trace::programs_enabled =  (int*) calloc(65536, sizeof(int));
+            
+            currentTraceFileName = argv[i];
+
+            sprintf(c_source_folder, "%s_c_source_code", currentTraceFileName);
+            mkdir(c_source_folder, 0775);
+
+            char  c_name[PATH_MAX];
+            sprintf(c_name, "%s/frame_0.c", c_source_folder);
+
+            retrace::c_file.open(c_name);
+            retrace::c_file << "#include \"includes.h\"\nvoid frame_0(){\n";
+
+            sprintf(c_name, "%s/data.c", c_source_folder);
+            retrace::c_file_tables.open(c_name);
+            retrace::c_file_tables << "#include \"includes.h\"\n\n";
+            sprintf(c_name, "%s/includes.h", c_source_folder);
+            retrace::c_file_includes.open(c_name);
+        }
+
         retrace::mainLoop();
 
+        free(trace::buffers_enabled);
+        free(trace::arrays_enabled);
+        free(trace::textures_enabled);
+        free(trace::framebuffers_enabled);
+        free(trace::renderbuffers_enabled);
+        free(trace::ids_enabled);
         retrace::parser.close();
     }
     

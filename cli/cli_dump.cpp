@@ -50,6 +50,7 @@ enum ColorOption {
 static ColorOption color = COLOR_OPTION_AUTO;
 
 static bool verbose = false;
+static bool cwriter = false;
 
 static trace::CallSet calls(trace::FREQUENCY_ALL);
 
@@ -64,6 +65,7 @@ usage(void)
         "\n"
         "    -h, --help           show this help message and exit\n"
         "    -v, --verbose        verbose output\n"
+        "    -c, --cfile          write trace into c file\n"
         "    --calls=CALLSET      only dump specified calls\n"
         "    --color[=WHEN]\n"
         "    --colour[=WHEN]      colored syntax highlighting\n"
@@ -90,6 +92,7 @@ const static struct option
 longOptions[] = {
     {"help", no_argument, 0, 'h'},
     {"verbose", no_argument, 0, 'v'},
+    {"cfile", no_argument, 0, 'c'},
     {"calls", required_argument, 0, CALLS_OPT},
     {"colour", optional_argument, 0, COLOR_OPT},
     {"color", optional_argument, 0, COLOR_OPT},
@@ -112,6 +115,10 @@ command(int argc, char *argv[])
             return 0;
         case 'v':
             verbose = true;
+            break;
+        case 'c':
+            cwriter = true;
+            dumpFlags |= trace::DUMP_FLAG_C_SOURCE;
             break;
         case CALLS_OPT:
             calls.merge(optarg);
@@ -180,9 +187,10 @@ command(int argc, char *argv[])
         trace::Call *call;
         while ((call = p.parse_call())) {
             if (calls.contains(*call)) {
-                if (verbose ||
+                if (verbose || cwriter ||
                     !(call->flags & trace::CALL_FLAG_VERBOSE)) {
-                    trace::dump(*call, std::cout, dumpFlags);
+                    trace::dump(*call, std::cout, std::cout, std::cout, \
+                                dumpFlags);
                 }
             }
             delete call;
